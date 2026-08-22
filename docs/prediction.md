@@ -8,7 +8,7 @@ Once `boltz` is installed, you can run predictions with:
 * If you include `--use_msa_server`, the MSA will be generated automatically via the mmseqs2 server. Without this flag, you must provide a pre-computed MSA.
 * If you include `--use_potentials`, Boltz will apply inference-time potentials to improve the physical plausibility of the predicted poses.
 * By default, Boltz runs structure and affinity prediction even if matching output files already exist. Add `--skip` to skip a seed only when all required model, summary confidence, and pLDDT files are present. Cached preprocessed inputs are still reused; use a separate output directory when changing MSA, templates, constraints, or other input details.
-* `-D true -P false` runs only the MSA data pipeline and saves separate paired/unpaired A3M files. `-D false -P true` reads those files, creates the native keyed CSV at runtime, and runs preprocessing and inference. At least one stage must be enabled.
+* `-D true -P false` runs only the MSA data pipeline and writes `<out_dir>/<target>/<target>_data.yaml` plus separate paired/unpaired A3M files. `-D false -P true` accepts that generated YAML directly, creates the native keyed CSV at runtime, and runs preprocessing and inference. At least one stage must be enabled.
 
 
 ## Input format
@@ -76,6 +76,7 @@ For proteins:
 * If `--use_msa_server` is set, the MSA is auto-generated (so `msa` can be omitted).
 * To use a precomputed custom MSA, set `msa: MSA_PATH` pointing to a `.a3m` file. If you have more than one protein chain, use a CSV format instead of a3m with two columns: `sequence` (protein sequence) and `key` (a unique identifier for matching rows across chains). Sequences with the same key are mutually aligned.
 * To force single-sequence mode (not recommended, as it reduces accuracy), set `msa: empty`.
+* A generated `*_data.yaml` represents an automatically searched MSA as `msa: {paired: PATH, unpaired: PATH}`. This mapping is a wrapper extension intended as the data-pipeline/inference hand-off. The normal scalar `msa: PATH` form remains supported.
 
 The `modifications` field is optional and allows specification of modified residues in polymers (`protein`, `dna`, or `rna`).  
 - `position`: index of the residue (starting from 1)  
@@ -142,7 +143,7 @@ Examples of common options include:
 
 | **Option**               | **Type**        | **Default**                 | **Description**                                                                                                                                                                     |
 |--------------------------|-----------------|-----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `--out_dir`              | `PATH`          | `./`                        | The path where to save the predictions.                                                                                                                                             |
+| `--out_dir`              | `PATH`          | `./`                        | Collection root below which a `<target>/` job directory is created.                                                                                                                  |
 | `--cache`                | `PATH`          | `~/.boltz`                  | The directory where to download the data and model. Will use environment variable `BOLTZ_CACHE` as an absolute path if set                                                          |
 | `--checkpoint`           | `PATH`          | None                        | An optional checkpoint. Uses the provided Boltz-2 model by default.                                                                                                                 |
 | `--devices`              | `INTEGER`       | `1`                         | The number of devices to use for prediction.                                                                                                                                        |
@@ -176,23 +177,26 @@ Examples of common options include:
 
 ## Output
 
-After running the model, the generated outputs are organized into the output directory following the structure below:
+For `target.yaml` and `--out_dir results`, job artifacts are organized below `results/target/`. A generated `target_data.yaml` maps back to the same target by removing the `_data` filename suffix:
 ```
-out_dir/
-├── lightning_logs/                                            # Logs generated during training or evaluation
-├── predictions/                                               # Contains the model's predictions
-    ├── [input_file1]/
-        ├── models/seed-[seed]_sample-0_model.cif
-        ├── summary_confidences/seed-[seed]_sample-0_summary_confidences.json
-        ├── full_data/plddt_seed-[seed]_sample-0.npz
-        ├── full_data/pae_seed-[seed]_sample-0.npz
-        ├── full_data/pde_seed-[seed]_sample-0.npz
-        ├── embeddings/seed-[seed]_embeddings.npz
-        └── affinity/seed-[seed]_affinity.json
-        ...
-    └── [input_file2]/
-        ...
-└── processed/                                                 # Processed data used during execution 
+results/
+└── target/
+    ├── target_data.yaml
+    ├── msa/
+    │   ├── target_0_paired.a3m
+    │   ├── target_0_unpaired.a3m
+    │   └── target_0.csv
+    ├── processed/
+    ├── lightning_logs/
+    └── predictions/
+        └── target/
+            ├── models/seed-[seed]_sample-0_model.cif
+            ├── summary_confidences/seed-[seed]_sample-0_summary_confidences.json
+            ├── full_data/plddt_seed-[seed]_sample-0.npz
+            ├── full_data/pae_seed-[seed]_sample-0.npz
+            ├── full_data/pde_seed-[seed]_sample-0.npz
+            ├── embeddings/seed-[seed]_embeddings.npz
+            └── affinity/seed-[seed]_affinity.json
 ```
 The `predictions` folder contains a unique folder for each input file. Samples retain their original diffusion sample index; they are not renamed by confidence rank. Confidence scores remain available in the summary JSON. The `processed` folder contains the processed input files used during inference.
 

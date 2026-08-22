@@ -10,27 +10,33 @@ are unchanged.
 `boltz predict` accepts two boolean stage controls:
 
 ```bash
-boltz predict INPUT -D true -P false --use_msa_server   # data-only
-boltz predict INPUT -D false -P true --seed 42          # inference-only
+boltz predict target.yaml --out_dir results -D true -P false --use_msa_server
+boltz predict results/target/target_data.yaml --out_dir results -D false -P true --seed 42
 ```
 
 Data-only search writes one paired and one unpaired A3M for every auto-MSA protein
-entity, plus `prepared_msa_manifest.json`, and stops before keyed CSV creation,
-preprocessing, checkpoint download, or model inference. Files are named:
+entity, then writes an executable `target_data.yaml`. It stops before keyed CSV
+creation, preprocessing, checkpoint download, or model inference. Files are named:
 
 ```text
-msa/<target>_<entity>_paired.a3m
-msa/<target>_<entity>_unpaired.a3m
+results/<target>/<target>_data.yaml
+results/<target>/msa/<target>_<entity>_paired.a3m
+results/<target>/msa/<target>_<entity>_unpaired.a3m
 ```
 
-The unpaired A3M can be replaced by DeepMSA2 output. Inference-only verifies its first
-sequence against the query, combines the prepared paired/unpaired files into the native
-Boltz keyed CSV, refreshes processed MSA arrays, and then follows the original inference
-path. The keyed CSV remains a runtime artifact.
+The generated YAML preserves the original Boltz input and replaces each automatically
+searched protein MSA with explicit `msa.paired` and `msa.unpaired` paths. The unpaired
+A3M can be replaced by DeepMSA2 output or its path can be edited in the YAML.
+Inference-only reads `target_data.yaml` directly, derives target id `target` by removing
+the `_data` suffix, verifies the unpaired query, creates the native keyed CSV, refreshes
+processed MSA arrays, and then follows the original inference path. The keyed CSV remains
+a runtime artifact.
 
 ## Output layout
 
-Each record is written below `predictions/<record.id>/`:
+The requested output directory is a collection root. For `target.yaml` or
+`target_data.yaml`, job artifacts are written below `results/target/`, and prediction
+files remain below `results/target/predictions/<record.id>/`:
 
 ```text
 models/seed-<seed>_sample-<sample>_model.cif

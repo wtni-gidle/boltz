@@ -1,4 +1,3 @@
-import json
 import multiprocessing
 import os
 import pickle
@@ -15,6 +14,7 @@ from typing import Literal, Optional
 
 import click
 import torch
+import yaml
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.utilities import rank_zero_only
@@ -29,7 +29,7 @@ from boltz.data.msa.pipeline import materialize_msa_csvs, search_msa_components
 from boltz.data.parse.a3m import parse_a3m
 from boltz.data.parse.csv import parse_csv
 from boltz.data.parse.fasta import parse_fasta
-from boltz.data.parse.yaml import parse_yaml
+from boltz.data.parse.yaml import parse_yaml, target_name_from_path
 from boltz.data.types import MSA, Manifest, Record, Target
 from boltz.data.write.writer import BoltzAffinityWriter, BoltzWriter
 from boltz.model.models.boltz1 import Boltz1
@@ -569,6 +569,44 @@ def collect_auto_msas(target: Target, msa_dir: Path) -> dict[str, str]:
     return to_generate
 
 
+def write_data_yaml(
+    source_path: Path,
+    out_dir: Path,
+    target: Target,
+    auto_msas: dict[str, str],
+) -> Path:
+    """Write the post-data-pipeline Boltz YAML used for later inference."""
+    if source_path.suffix.lower() not in (".yml", ".yaml"):
+        msg = "Staged data-pipeline output currently requires a YAML input."
+        raise ValueError(msg)
+
+    with source_path.open() as handle:
+        prepared_schema = yaml.safe_load(handle)
+
+    msa_id_by_sequence = {
+        sequence: msa_id for msa_id, sequence in auto_msas.items()
+    }
+    for item in prepared_schema.get("sequences", []):
+        protein = item.get("protein")
+        if protein is None or protein.get("msa") not in (None, "", 0):
+            continue
+        sequence = str(protein["sequence"])
+        msa_id = msa_id_by_sequence.get(sequence)
+        if msa_id is None:
+            continue
+        paired_path = out_dir / "msa" / f"{msa_id}_paired.a3m"
+        unpaired_path = out_dir / "msa" / f"{msa_id}_unpaired.a3m"
+        protein["msa"] = {
+            "paired": str(paired_path.relative_to(out_dir)),
+            "unpaired": str(unpaired_path.relative_to(out_dir)),
+        }
+
+    data_path = out_dir / f"{target.record.id}_data.yaml"
+    data_path.write_text(yaml.safe_dump(prepared_schema, sort_keys=False))
+    click.echo(f"Prepared Boltz input written to {data_path}")
+    return data_path
+
+
 def process_input(  # noqa: C901, PLR0912, PLR0915, D103
     path: Path,
     ccd: dict,
@@ -624,6 +662,14 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
             else:
                 click.echo(f"Materializing prepared MSA files for {path}.")
                 materialize_msa_csvs(data=to_generate, msa_dir=msa_dir)
+
+        if run_data_pipeline:
+            write_data_yaml(
+                source_path=path,
+                out_dir=msa_dir.parent,
+                target=target,
+                auto_msas=to_generate,
+            )
 
         # Parse MSA data
         msas = sorted({c.msa_id for c in target.record.chains if c.msa_id != -1})
@@ -763,7 +809,7 @@ def process_inputs(
         processed_ids = {record.id for record in existing}
 
         # Filter to missing only
-        data = [d for d in data if d.stem not in processed_ids]
+        data = [d for d in data if target_name_from_path(d) not in processed_ids]
 
         # Nothing to do, update the manifest and return
         if data:
@@ -840,7 +886,7 @@ def process_inputs(
     # Load all records and write manifest
     record_paths = list(records_dir.glob("*.json"))
     if not run_data_pipeline:
-        requested_ids = {path.stem for path in data}
+        requested_ids = {target_name_from_path(path) for path in data}
         record_paths = [path for path in record_paths if path.stem in requested_ids]
     records = [Record.load(path) for path in record_paths]
     manifest = Manifest(records)
@@ -861,7 +907,7 @@ def prepare_msa_inputs(
     api_key_header: Optional[str] = None,
     api_key_value: Optional[str] = None,
 ) -> None:
-    """Search and externalize paired/unpaired A3M files, then stop."""
+    """Search MSAs and write an executable ``<target>_data.yaml`` input."""
     msa_dir = out_dir / "msa"
     msa_dir.mkdir(parents=True, exist_ok=True)
     if boltz2:
@@ -870,7 +916,6 @@ def prepare_msa_inputs(
         with ccd_path.open("rb") as file:
             ccd = pickle.load(file)  # noqa: S301
 
-    prepared_targets = []
     for path in data:
         target = parse_input_target(path, ccd, mol_dir, boltz2)
         to_generate = collect_auto_msas(target, msa_dir)
@@ -897,35 +942,12 @@ def prepare_msa_inputs(
                 api_key_value=api_key_value,
             )
 
-        entities = []
-        for msa_id, sequence in to_generate.items():
-            paired_path = msa_dir / f"{msa_id}_paired.a3m"
-            unpaired_path = msa_dir / f"{msa_id}_unpaired.a3m"
-            entities.append(
-                {
-                    "msa_id": msa_id,
-                    "sequence": sequence,
-                    "paired_msa": str(paired_path.relative_to(out_dir)),
-                    "unpaired_msa": str(unpaired_path.relative_to(out_dir)),
-                }
-            )
-        prepared_targets.append(
-            {
-                "input": str(path),
-                "target_id": target.record.id,
-                "entities": entities,
-            }
+        write_data_yaml(
+            source_path=path,
+            out_dir=out_dir,
+            target=target,
+            auto_msas=to_generate,
         )
-
-    manifest_path = out_dir / "prepared_msa_manifest.json"
-    manifest = {
-        "version": 1,
-        "msa_server_url": msa_server_url,
-        "msa_pairing_strategy": msa_pairing_strategy,
-        "targets": prepared_targets,
-    }
-    manifest_path.write_text(json.dumps(manifest, indent=2))
-    click.echo(f"Prepared MSA manifest written to {manifest_path}")
 
 
 @click.group()
@@ -939,7 +961,7 @@ def cli() -> None:
 @click.option(
     "--out_dir",
     type=click.Path(exists=False),
-    help="The path where to save the predictions.",
+    help="The collection root where the target job directory is created.",
     default="./",
 )
 @click.option(
@@ -1277,10 +1299,11 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         else:
             click.echo("MSA server authentication: no credentials provided")
 
-    # Create output directories
+    # Create one AF3-style job directory below the requested output root. A
+    # generated ``*_data.yaml`` deliberately maps back to the original target
+    # name so data-only and inference-only runs share the same directory.
     data = Path(data).expanduser()
-    out_dir = Path(out_dir).expanduser()
-    out_dir = out_dir / f"boltz_results_{data.stem}"
+    out_dir = Path(out_dir).expanduser() / target_name_from_path(data)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Download necessary data and model

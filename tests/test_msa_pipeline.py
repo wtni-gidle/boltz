@@ -1,8 +1,8 @@
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 from boltz import main as main_module
@@ -12,6 +12,8 @@ from boltz.data.msa.pipeline import (
     materialize_msa_csv,
     search_msa_components,
 )
+from boltz.data.parse import yaml as yaml_parser
+from boltz.data.parse.yaml import materialize_prepared_msas, target_name_from_path
 
 
 def test_search_saves_separate_paired_and_unpaired_a3m(
@@ -170,16 +172,26 @@ def test_data_only_cli_stops_after_preparing_msas(
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
     assert calls[0]["use_msa_server"] is True
+    assert calls[0]["out_dir"] == tmp_path / "out" / "target"
     assert downloads == [False]
     assert "No seed provided" not in result.output
 
 
-def test_prepare_msa_inputs_writes_manifest_without_csv(
+def test_prepare_msa_inputs_writes_executable_yaml_without_csv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     input_path = tmp_path / "target.yaml"
-    input_path.touch()
+    input_path.write_text(
+        """version: 1
+sequences:
+  - protein:
+      id: A
+      sequence: AAAA
+templates:
+  - cif: template.cif
+"""
+    )
     target = SimpleNamespace(record=SimpleNamespace(id="target"))
     monkeypatch.setattr(main_module, "load_canonicals", lambda _path: {})
     monkeypatch.setattr(
@@ -213,12 +225,87 @@ def test_prepare_msa_inputs_writes_manifest_without_csv(
         msa_pairing_strategy="greedy",
     )
 
-    manifest = json.loads((out_dir / "prepared_msa_manifest.json").read_text())
-    entity = manifest["targets"][0]["entities"][0]
-    assert entity["msa_id"] == "target_0"
-    assert entity["paired_msa"] == "msa/target_0_paired.a3m"
-    assert entity["unpaired_msa"] == "msa/target_0_unpaired.a3m"
+    prepared = yaml.safe_load((out_dir / "target_data.yaml").read_text())
+    protein = prepared["sequences"][0]["protein"]
+    assert protein["msa"] == {
+        "paired": "msa/target_0_paired.a3m",
+        "unpaired": "msa/target_0_unpaired.a3m",
+    }
+    assert prepared["templates"] == [{"cif": "template.cif"}]
+    assert not (out_dir / "prepared_msa_manifest.json").exists()
     assert not (out_dir / "msa" / "target_0.csv").exists()
+
+
+def test_prepared_yaml_materializes_relative_msa_paths(tmp_path: Path) -> None:
+    msa_dir = tmp_path / "msa"
+    msa_dir.mkdir()
+    (msa_dir / "target_0_paired.a3m").write_text("")
+    (msa_dir / "target_0_unpaired.a3m").write_text(
+        ">query\nAAAA\n>hit\nAA-A\n"
+    )
+    data_path = tmp_path / "target_data.yaml"
+    schema = {
+        "sequences": [
+            {
+                "protein": {
+                    "id": "A",
+                    "sequence": "AAAA",
+                    "msa": {
+                        "paired": "msa/target_0_paired.a3m",
+                        "unpaired": "msa/target_0_unpaired.a3m",
+                    },
+                }
+            }
+        ]
+    }
+
+    materialize_prepared_msas(data_path, schema)
+
+    csv_path = msa_dir / "target_0.csv"
+    assert csv_path.read_text().splitlines() == [
+        "key,sequence",
+        "-1,AAAA",
+        "-1,AA-A",
+    ]
+    assert schema["sequences"][0]["protein"]["msa"] == str(csv_path)
+    assert target_name_from_path(data_path) == "target"
+
+
+def test_parse_data_yaml_uses_original_target_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    msa_dir = tmp_path / "msa"
+    msa_dir.mkdir()
+    (msa_dir / "target_0_paired.a3m").write_text("")
+    (msa_dir / "target_0_unpaired.a3m").write_text(">query\nAAAA\n")
+    data_path = tmp_path / "target_data.yaml"
+    data_path.write_text(
+        """version: 1
+sequences:
+  - protein:
+      id: A
+      sequence: AAAA
+      msa:
+        paired: msa/target_0_paired.a3m
+        unpaired: msa/target_0_unpaired.a3m
+"""
+    )
+    parsed = {}
+
+    def fake_parse(name, schema, *_args, **_kwargs):
+        parsed["name"] = name
+        parsed["schema"] = schema
+        return SimpleNamespace()
+
+    monkeypatch.setattr(yaml_parser, "parse_boltz_schema", fake_parse)
+
+    yaml_parser.parse_yaml(data_path, {}, tmp_path, boltz2=True)
+
+    assert parsed["name"] == "target"
+    assert parsed["schema"]["sequences"][0]["protein"]["msa"] == str(
+        msa_dir / "target_0.csv"
+    )
 
 
 def test_cli_rejects_disabling_both_stages(tmp_path: Path) -> None:
