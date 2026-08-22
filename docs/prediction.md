@@ -8,6 +8,7 @@ Once `boltz` is installed, you can run predictions with:
 * If you include `--use_msa_server`, the MSA will be generated automatically via the mmseqs2 server. Without this flag, you must provide a pre-computed MSA.
 * If you include `--use_potentials`, Boltz will apply inference-time potentials to improve the physical plausibility of the predicted poses.
 * By default, Boltz runs structure and affinity prediction even if matching output files already exist. Add `--skip` to skip a seed only when all required model, summary confidence, and pLDDT files are present. Cached preprocessed inputs are still reused; use a separate output directory when changing MSA, templates, constraints, or other input details.
+* `-D true -P false` runs only the MSA data pipeline and saves separate paired/unpaired A3M files. `-D false -P true` reads those files, creates the native keyed CSV at runtime, and runs preprocessing and inference. At least one stage must be enabled.
 
 
 ## Input format
@@ -153,6 +154,8 @@ Examples of common options include:
 | `--step_scale`           | `FLOAT`         | `1.638` for Boltz-1 and `1.5` for Boltz-2                     | The step size is related to the temperature at which the diffusion process samples the distribution. The lower the higher the diversity among samples (recommended between 1 and 2). |
 | `--output_format`        | `[pdb,mmcif]`   | `mmcif`                     | The output format to use for the predictions.                                                                                                                                       |
 | `--num_workers`          | `INTEGER`       | `2`                         | The number of dataloader workers to use for prediction.                                                                                                                             |
+| `-D`, `--run_data_pipeline` | `BOOLEAN`    | `True`                      | Whether to search and save separate paired/unpaired MSA files.                                                                                                                       |
+| `-P`, `--run_inference`  | `BOOLEAN`       | `True`                      | Whether to run preprocessing and model inference.                                                                                                                                   |
 | `--method`          | str       | None                         | The method to use for prediction.                                                                                                                             |
 | `--preprocessing-threads`          | `INTEGER`       | `multiprocessing.cpu_count()` | The number of threads to use for preprocessing.                                                                                                                             |
 | `--affinity_mw_correction`          | `FLAG`       | `False` | Whether to add the Molecular Weight correction to the affinity value head.                                                                                                                             |
@@ -179,21 +182,19 @@ out_dir/
 ├── lightning_logs/                                            # Logs generated during training or evaluation
 ├── predictions/                                               # Contains the model's predictions
     ├── [input_file1]/
-        ├── [input_file1]_model_0.cif                          # The predicted structure in CIF format, with the inclusion of per token pLDDT scores
-        ├── confidence_[input_file1]_model_0.json              # The confidence scores (confidence_score, ptm, iptm, ligand_iptm, protein_iptm, complex_plddt, complex_iplddt, chains_ptm, pair_chains_iptm)
-        ├── affinity_[input_file1].json                        # The affinity scores (affinity_pred_value, affinity_probability_binary, affinity_pred_value1, affinity_probability_binary1, affinity_pred_value2, affinity_probability_binary2)
-
-        ├── pae_[input_file1]_model_0.npz                      # The predicted PAE score for every pair of tokens
-        ├── pde_[input_file1]_model_0.npz                      # The predicted PDE score for every pair of tokens
-        ├── plddt_[input_file1]_model_0.npz                    # The predicted pLDDT score for every token
-        ...
-        └── [input_file1]_model_[diffusion_samples-1].cif      # The predicted structure in CIF format
+        ├── models/seed-[seed]_sample-0_model.cif
+        ├── summary_confidences/seed-[seed]_sample-0_summary_confidences.json
+        ├── full_data/plddt_seed-[seed]_sample-0.npz
+        ├── full_data/pae_seed-[seed]_sample-0.npz
+        ├── full_data/pde_seed-[seed]_sample-0.npz
+        ├── embeddings/seed-[seed]_embeddings.npz
+        └── affinity/seed-[seed]_affinity.json
         ...
     └── [input_file2]/
         ...
 └── processed/                                                 # Processed data used during execution 
 ```
-The `predictions` folder contains a unique folder for each input file. The input folders contain `diffusion_samples` predictions saved in the output_format ordered by confidence score as well as additional files containing the predictions of the confidence model and affinity model. The `processed` folder contains the processed input files that the model uses during inference.
+The `predictions` folder contains a unique folder for each input file. Samples retain their original diffusion sample index; they are not renamed by confidence rank. Confidence scores remain available in the summary JSON. The `processed` folder contains the processed input files used during inference.
 
 Each output folder includes a confidence `.json` file with aggregated confidence scores for that sample. Its structure is:
 ```yaml

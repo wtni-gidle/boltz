@@ -1,8 +1,32 @@
 # EnsembleFold wrapper changes
 
 This branch is based on upstream commit
-`b1ebfc46ecf57f5414e0d1a6f9027bbb122c53bc` and changes prediction I/O only.
-Model architecture, checkpoints, featurization, and diffusion sampling are unchanged.
+`b1ebfc46ecf57f5414e0d1a6f9027bbb122c53bc` and changes pipeline orchestration and
+prediction I/O. Model architecture, checkpoints, featurization, and diffusion sampling
+are unchanged.
+
+## Two-stage MSA pipeline
+
+`boltz predict` accepts two boolean stage controls:
+
+```bash
+boltz predict INPUT -D true -P false --use_msa_server   # data-only
+boltz predict INPUT -D false -P true --seed 42          # inference-only
+```
+
+Data-only search writes one paired and one unpaired A3M for every auto-MSA protein
+entity, plus `prepared_msa_manifest.json`, and stops before keyed CSV creation,
+preprocessing, checkpoint download, or model inference. Files are named:
+
+```text
+msa/<target>_<entity>_paired.a3m
+msa/<target>_<entity>_unpaired.a3m
+```
+
+The unpaired A3M can be replaced by DeepMSA2 output. Inference-only verifies its first
+sequence against the query, combines the prepared paired/unpaired files into the native
+Boltz keyed CSV, refreshes processed MSA arrays, and then follows the original inference
+path. The keyed CSV remains a runtime artifact.
 
 ## Output layout
 

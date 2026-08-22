@@ -1,3 +1,4 @@
+import json
 import multiprocessing
 import os
 import pickle
@@ -24,12 +25,12 @@ from boltz.data import const
 from boltz.data.module.inference import BoltzInferenceDataModule
 from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
 from boltz.data.mol import load_canonicals
-from boltz.data.msa.mmseqs2 import run_mmseqs2
+from boltz.data.msa.pipeline import materialize_msa_csvs, search_msa_components
 from boltz.data.parse.a3m import parse_a3m
 from boltz.data.parse.csv import parse_csv
 from boltz.data.parse.fasta import parse_fasta
 from boltz.data.parse.yaml import parse_yaml
-from boltz.data.types import MSA, Manifest, Record
+from boltz.data.types import MSA, Manifest, Record, Target
 from boltz.data.write.writer import BoltzAffinityWriter, BoltzWriter
 from boltz.model.models.boltz1 import Boltz1
 from boltz.model.models.boltz2 import Boltz2
@@ -159,7 +160,7 @@ class BoltzSteeringParams:
 
 
 @rank_zero_only
-def download_boltz1(cache: Path) -> None:
+def download_boltz1(cache: Path, *, download_weights: bool = True) -> None:
     """Download all the required data.
 
     Parameters
@@ -176,6 +177,9 @@ def download_boltz1(cache: Path) -> None:
             "change the cache directory with the --cache flag."
         )
         urllib.request.urlretrieve(CCD_URL, str(ccd))  # noqa: S310
+
+    if not download_weights:
+        return
 
     # Download model
     model = cache / "boltz1_conf.ckpt"
@@ -196,7 +200,7 @@ def download_boltz1(cache: Path) -> None:
 
 
 @rank_zero_only
-def download_boltz2(cache: Path) -> None:
+def download_boltz2(cache: Path, *, download_weights: bool = True) -> None:
     """Download all the required data.
 
     Parameters
@@ -223,6 +227,9 @@ def download_boltz2(cache: Path) -> None:
         )
         with tarfile.open(str(tar_mols), "r") as tar:
             tar.extractall(cache)  # noqa: S202
+
+    if not download_weights:
+        return
 
     # Download model
     model = cache / "boltz2_conf.ckpt"
@@ -512,76 +519,54 @@ def compute_msa(
     click.echo(f"Calling MSA server for target {target_id} with {len(data)} sequences")
     click.echo(f"MSA server URL: {msa_server_url}")
     click.echo(f"MSA pairing strategy: {msa_pairing_strategy}")
-    
-    # Construct auth headers if API key header/value is provided
-    auth_headers = None
-    if api_key_value:
-        key = api_key_header if api_key_header else "X-API-Key"
-        value = api_key_value
-        auth_headers = {
-            "Content-Type": "application/json",
-            key: value
-        }
-        click.echo(f"Using API key authentication for MSA server (header: {key})")
-    elif msa_server_username and msa_server_password:
-        click.echo("Using basic authentication for MSA server")
-    else:
-        click.echo("No authentication provided for MSA server")
-    
-    if len(data) > 1:
-        paired_msas = run_mmseqs2(
-            list(data.values()),
-            msa_dir / f"{target_id}_paired_tmp",
-            use_env=True,
-            use_pairing=True,
-            host_url=msa_server_url,
-            pairing_strategy=msa_pairing_strategy,
-            msa_server_username=msa_server_username,
-            msa_server_password=msa_server_password,
-            auth_headers=auth_headers,
-        )
-    else:
-        paired_msas = [""] * len(data)
-
-    unpaired_msa = run_mmseqs2(
-        list(data.values()),
-        msa_dir / f"{target_id}_unpaired_tmp",
-        use_env=True,
-        use_pairing=False,
-        host_url=msa_server_url,
-        pairing_strategy=msa_pairing_strategy,
+    search_msa_components(
+        data=data,
+        target_id=target_id,
+        msa_dir=msa_dir,
+        msa_server_url=msa_server_url,
+        msa_pairing_strategy=msa_pairing_strategy,
         msa_server_username=msa_server_username,
         msa_server_password=msa_server_password,
-        auth_headers=auth_headers,
+        api_key_header=api_key_header,
+        api_key_value=api_key_value,
     )
+    materialize_msa_csvs(data=data, msa_dir=msa_dir)
 
-    for idx, name in enumerate(data):
-        # Get paired sequences
-        paired = paired_msas[idx].strip().splitlines()
-        paired = paired[1::2]  # ignore headers
-        paired = paired[: const.max_paired_seqs]
 
-        # Set key per row and remove empty sequences
-        keys = [idx for idx, s in enumerate(paired) if s != "-" * len(s)]
-        paired = [s for s in paired if s != "-" * len(s)]
+def parse_input_target(
+    path: Path,
+    ccd: dict,
+    mol_dir: Path,
+    boltz2: bool,
+) -> Target:
+    """Parse one supported Boltz input file."""
+    if path.suffix.lower() in (".fa", ".fas", ".fasta"):
+        return parse_fasta(path, ccd, mol_dir, boltz2)
+    if path.suffix.lower() in (".yml", ".yaml"):
+        return parse_yaml(path, ccd, mol_dir, boltz2)
+    if path.is_dir():
+        msg = f"Found directory {path} instead of .fasta or .yaml."
+        raise RuntimeError(msg)
+    msg = (
+        f"Unable to parse filetype {path.suffix}, "
+        "please provide a .fasta or .yaml file."
+    )
+    raise RuntimeError(msg)
 
-        # Combine paired-unpaired sequences
-        unpaired = unpaired_msa[idx].strip().splitlines()
-        unpaired = unpaired[1::2]
-        unpaired = unpaired[: (const.max_msa_seqs - len(paired))]
-        if paired:
-            unpaired = unpaired[1:]  # ignore query is already present
 
-        # Combine
-        seqs = paired + unpaired
-        keys = keys + [-1] * len(unpaired)
-
-        # Dump MSA
-        csv_str = ["key,sequence"] + [f"{key},{seq}" for key, seq in zip(keys, seqs)]
-
-        msa_path = msa_dir / f"{name}.csv"
-        with msa_path.open("w") as f:
-            f.write("\n".join(csv_str))
+def collect_auto_msas(target: Target, msa_dir: Path) -> dict[str, str]:
+    """Assign runtime CSV paths and collect auto-MSA protein entities."""
+    to_generate: dict[str, str] = {}
+    prot_id = const.chain_type_ids["PROTEIN"]
+    for chain in target.record.chains:
+        if (chain.mol_type == prot_id) and (chain.msa_id == 0):
+            entity_id = chain.entity_id
+            msa_id = f"{target.record.id}_{entity_id}"
+            to_generate[msa_id] = target.sequences[entity_id]
+            chain.msa_id = msa_dir / f"{msa_id}.csv"
+        elif chain.msa_id == 0:
+            chain.msa_id = -1
+    return to_generate
 
 
 def process_input(  # noqa: C901, PLR0912, PLR0915, D103
@@ -590,6 +575,7 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
     msa_dir: Path,
     mol_dir: Path,
     boltz2: bool,
+    run_data_pipeline: bool,
     use_msa_server: bool,
     msa_server_url: str,
     msa_pairing_strategy: str,
@@ -606,58 +592,38 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
     records_dir: Path,
 ) -> None:
     try:
-        # Parse data
-        if path.suffix.lower() in (".fa", ".fas", ".fasta"):
-            target = parse_fasta(path, ccd, mol_dir, boltz2)
-        elif path.suffix.lower() in (".yml", ".yaml"):
-            target = parse_yaml(path, ccd, mol_dir, boltz2)
-        elif path.is_dir():
-            msg = f"Found directory {path} instead of .fasta or .yaml, skipping."
-            raise RuntimeError(msg)  # noqa: TRY301
-        else:
-            msg = (
-                f"Unable to parse filetype {path.suffix}, "
-                "please provide a .fasta or .yaml file."
-            )
-            raise RuntimeError(msg)  # noqa: TRY301
+        target = parse_input_target(path, ccd, mol_dir, boltz2)
 
         # Get target id
         target_id = target.record.id
 
-        # Get all MSA ids and decide whether to generate MSA
-        to_generate = {}
-        prot_id = const.chain_type_ids["PROTEIN"]
-        for chain in target.record.chains:
-            # Add to generate list, assigning entity id
-            if (chain.mol_type == prot_id) and (chain.msa_id == 0):
-                entity_id = chain.entity_id
-                msa_id = f"{target_id}_{entity_id}"
-                to_generate[msa_id] = target.sequences[entity_id]
-                chain.msa_id = msa_dir / f"{msa_id}.csv"
-
-            # We do not support msa generation for non-protein chains
-            elif chain.msa_id == 0:
-                chain.msa_id = -1
-
-        # Generate MSA
-        if to_generate and not use_msa_server:
-            msg = "Missing MSA's in input and --use_msa_server flag not set."
-            raise RuntimeError(msg)  # noqa: TRY301
+        # Resolve auto-MSA entities to runtime CSV paths.
+        to_generate = collect_auto_msas(target, msa_dir)
 
         if to_generate:
-            msg = f"Generating MSA for {path} with {len(to_generate)} protein entities."
-            click.echo(msg)
-            compute_msa(
-                data=to_generate,
-                target_id=target_id,
-                msa_dir=msa_dir,
-                msa_server_url=msa_server_url,
-                msa_pairing_strategy=msa_pairing_strategy,
-                msa_server_username=msa_server_username,
-                msa_server_password=msa_server_password,
-                api_key_header=api_key_header,
-                api_key_value=api_key_value,
-            )
+            if run_data_pipeline:
+                if not use_msa_server:
+                    msg = "Missing MSA's in input and --use_msa_server flag not set."
+                    raise RuntimeError(msg)  # noqa: TRY301
+                msg = (
+                    f"Generating MSA for {path} with {len(to_generate)} "
+                    "protein entities."
+                )
+                click.echo(msg)
+                compute_msa(
+                    data=to_generate,
+                    target_id=target_id,
+                    msa_dir=msa_dir,
+                    msa_server_url=msa_server_url,
+                    msa_pairing_strategy=msa_pairing_strategy,
+                    msa_server_username=msa_server_username,
+                    msa_server_password=msa_server_password,
+                    api_key_header=api_key_header,
+                    api_key_value=api_key_value,
+                )
+            else:
+                click.echo(f"Materializing prepared MSA files for {path}.")
+                materialize_msa_csvs(data=to_generate, msa_dir=msa_dir)
 
         # Parse MSA data
         msas = sorted({c.msa_id for c in target.record.chains if c.msa_id != -1})
@@ -672,7 +638,7 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
             # Dump processed MSA
             processed = processed_msa_dir / f"{target_id}_{msa_idx}.npz"
             msa_id_map[msa_id] = f"{target_id}_{msa_idx}"
-            if not processed.exists():
+            if not processed.exists() or not run_data_pipeline:
                 # Parse A3M
                 if msa_path.suffix == ".a3m":
                     msa: MSA = parse_a3m(
@@ -720,6 +686,9 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
         import traceback
 
         traceback.print_exc()
+        if not run_data_pipeline:
+            msg = f"Failed to materialize prepared MSA input {path}."
+            raise RuntimeError(msg) from e
         print(f"Failed to process {path}. Skipping. Error: {e}.")  # noqa: T201
 
 
@@ -732,6 +701,7 @@ def process_inputs(
     msa_server_url: str,
     msa_pairing_strategy: str,
     max_msa_seqs: int = 8192,
+    run_data_pipeline: bool = True,
     use_msa_server: bool = False,
     msa_server_username: Optional[str] = None,
     msa_server_password: Optional[str] = None,
@@ -754,6 +724,8 @@ def process_inputs(
         Max number of MSA sequences, by default 8192.
     use_msa_server : bool, optional
         Whether to use the MMSeqs2 server for MSA generation, by default False.
+    run_data_pipeline : bool, optional
+        Whether to search missing MSAs instead of reading prepared A3M files.
     msa_server_username : str, optional
         Username for basic authentication with MSA server, by default None.
     msa_server_password : str, optional
@@ -785,7 +757,7 @@ def process_inputs(
 
     # Check if records exist at output path
     records_dir = out_dir / "processed" / "records"
-    if records_dir.exists():
+    if records_dir.exists() and run_data_pipeline:
         # Load existing records
         existing = [Record.load(p) for p in records_dir.glob("*.json")]
         processed_ids = {record.id for record in existing}
@@ -837,6 +809,7 @@ def process_inputs(
         msa_dir=msa_dir,
         mol_dir=mol_dir,
         boltz2=boltz2,
+        run_data_pipeline=run_data_pipeline,
         use_msa_server=use_msa_server,
         msa_server_url=msa_server_url,
         msa_pairing_strategy=msa_pairing_strategy,
@@ -865,9 +838,94 @@ def process_inputs(
             process_input_partial(path)
 
     # Load all records and write manifest
-    records = [Record.load(p) for p in records_dir.glob("*.json")]
+    record_paths = list(records_dir.glob("*.json"))
+    if not run_data_pipeline:
+        requested_ids = {path.stem for path in data}
+        record_paths = [path for path in record_paths if path.stem in requested_ids]
+    records = [Record.load(path) for path in record_paths]
     manifest = Manifest(records)
     manifest.dump(out_dir / "processed" / "manifest.json")
+
+
+def prepare_msa_inputs(
+    data: list[Path],
+    out_dir: Path,
+    ccd_path: Path,
+    mol_dir: Path,
+    boltz2: bool,
+    use_msa_server: bool,
+    msa_server_url: str,
+    msa_pairing_strategy: str,
+    msa_server_username: Optional[str] = None,
+    msa_server_password: Optional[str] = None,
+    api_key_header: Optional[str] = None,
+    api_key_value: Optional[str] = None,
+) -> None:
+    """Search and externalize paired/unpaired A3M files, then stop."""
+    msa_dir = out_dir / "msa"
+    msa_dir.mkdir(parents=True, exist_ok=True)
+    if boltz2:
+        ccd = load_canonicals(mol_dir)
+    else:
+        with ccd_path.open("rb") as file:
+            ccd = pickle.load(file)  # noqa: S301
+
+    prepared_targets = []
+    for path in data:
+        target = parse_input_target(path, ccd, mol_dir, boltz2)
+        to_generate = collect_auto_msas(target, msa_dir)
+        if to_generate and not use_msa_server:
+            msg = (
+                f"Input {path} has auto MSA entities, but --use_msa_server "
+                "was not set."
+            )
+            raise RuntimeError(msg)
+        if to_generate:
+            click.echo(
+                f"Preparing paired/unpaired MSA files for {path} "
+                f"({len(to_generate)} protein entities)."
+            )
+            search_msa_components(
+                data=to_generate,
+                target_id=target.record.id,
+                msa_dir=msa_dir,
+                msa_server_url=msa_server_url,
+                msa_pairing_strategy=msa_pairing_strategy,
+                msa_server_username=msa_server_username,
+                msa_server_password=msa_server_password,
+                api_key_header=api_key_header,
+                api_key_value=api_key_value,
+            )
+
+        entities = []
+        for msa_id, sequence in to_generate.items():
+            paired_path = msa_dir / f"{msa_id}_paired.a3m"
+            unpaired_path = msa_dir / f"{msa_id}_unpaired.a3m"
+            entities.append(
+                {
+                    "msa_id": msa_id,
+                    "sequence": sequence,
+                    "paired_msa": str(paired_path.relative_to(out_dir)),
+                    "unpaired_msa": str(unpaired_path.relative_to(out_dir)),
+                }
+            )
+        prepared_targets.append(
+            {
+                "input": str(path),
+                "target_id": target.record.id,
+                "entities": entities,
+            }
+        )
+
+    manifest_path = out_dir / "prepared_msa_manifest.json"
+    manifest = {
+        "version": 1,
+        "msa_server_url": msa_server_url,
+        "msa_pairing_strategy": msa_pairing_strategy,
+        "targets": prepared_targets,
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    click.echo(f"Prepared MSA manifest written to {manifest_path}")
 
 
 @click.group()
@@ -883,6 +941,22 @@ def cli() -> None:
     type=click.Path(exists=False),
     help="The path where to save the predictions.",
     default="./",
+)
+@click.option(
+    "-D",
+    "--run_data_pipeline",
+    type=bool,
+    default=True,
+    show_default=True,
+    help="Search and save paired/unpaired MSA files.",
+)
+@click.option(
+    "-P",
+    "--run_inference",
+    type=bool,
+    default=True,
+    show_default=True,
+    help="Run preprocessing and model inference.",
 )
 @click.option(
     "--cache",
@@ -1107,6 +1181,8 @@ def cli() -> None:
 def predict(  # noqa: C901, PLR0915, PLR0912
     data: str,
     out_dir: str,
+    run_data_pipeline: bool = True,
+    run_inference: bool = True,
     cache: str = "~/.boltz",
     checkpoint: Optional[str] = None,
     affinity_checkpoint: Optional[str] = None,
@@ -1144,43 +1220,48 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     write_embeddings: bool = False,
 ) -> None:
     """Run predictions with Boltz."""
-    # If cpu, write a friendly warning
-    if accelerator == "cpu":
-        msg = "Running on CPU, this will be slow. Consider using a GPU."
-        click.echo(msg)
-
-    # Supress some lightning warnings
-    warnings.filterwarnings(
-        "ignore", ".*that has Tensor Cores. To properly utilize them.*"
-    )
-
-    # Set no grad
-    torch.set_grad_enabled(False)
-
-    # Ignore matmul precision warning
-    torch.set_float32_matmul_precision("highest")
+    if not run_data_pipeline and not run_inference:
+        msg = "At least one of --run_data_pipeline or --run_inference must be true."
+        raise click.UsageError(msg)
 
     # Set rdkit pickle logic
     Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 
-    # Resolve an omitted seed to a concrete value so output names and skip
-    # checks never collapse independent random runs into "seed-None".
-    if seed is None:
-        seed = secrets.randbits(32)
-        click.echo(f"No seed provided; using generated seed {seed}.")
-    seed_everything(seed)
+    if run_inference:
+        # If cpu, write a friendly warning
+        if accelerator == "cpu":
+            msg = "Running on CPU, this will be slow. Consider using a GPU."
+            click.echo(msg)
 
-    for key in ["CUEQ_DEFAULT_CONFIG", "CUEQ_DISABLE_AOT_TUNING"]:
-        # Disable kernel tuning by default,
-        # but do not modify envvar if already set by caller
-        os.environ[key] = os.environ.get(key, "1")
+        # Supress some lightning warnings
+        warnings.filterwarnings(
+            "ignore", ".*that has Tensor Cores. To properly utilize them.*"
+        )
+
+        # Set no grad
+        torch.set_grad_enabled(False)
+
+        # Ignore matmul precision warning
+        torch.set_float32_matmul_precision("highest")
+
+        # Resolve an omitted seed to a concrete value so output names and skip
+        # checks never collapse independent random runs into "seed-None".
+        if seed is None:
+            seed = secrets.randbits(32)
+            click.echo(f"No seed provided; using generated seed {seed}.")
+        seed_everything(seed)
+
+        for key in ["CUEQ_DEFAULT_CONFIG", "CUEQ_DISABLE_AOT_TUNING"]:
+            # Disable kernel tuning by default,
+            # but do not modify envvar if already set by caller
+            os.environ[key] = os.environ.get(key, "1")
 
     # Set cache path
     cache = Path(cache).expanduser()
     cache.mkdir(parents=True, exist_ok=True)
 
     # Get MSA server credentials from environment variables if not provided
-    if use_msa_server:
+    if run_data_pipeline and use_msa_server:
         if msa_server_username is None:
             msa_server_username = os.environ.get("BOLTZ_MSA_USERNAME")
         if msa_server_password is None:
@@ -1204,9 +1285,9 @@ def predict(  # noqa: C901, PLR0915, PLR0912
 
     # Download necessary data and model
     if model == "boltz1":
-        download_boltz1(cache)
+        download_boltz1(cache, download_weights=run_inference)
     elif model == "boltz2":
-        download_boltz2(cache)
+        download_boltz2(cache, download_weights=run_inference)
     else:
         msg = f"Model {model} not supported. Supported: boltz1, boltz2."
         raise ValueError(f"Model {model} not supported.")
@@ -1227,6 +1308,23 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     # Process inputs
     ccd_path = cache / "ccd.pkl"
     mol_dir = cache / "mols"
+    if run_data_pipeline and not run_inference:
+        prepare_msa_inputs(
+            data=data,
+            out_dir=out_dir,
+            ccd_path=ccd_path,
+            mol_dir=mol_dir,
+            boltz2=model == "boltz2",
+            use_msa_server=use_msa_server,
+            msa_server_url=msa_server_url,
+            msa_pairing_strategy=msa_pairing_strategy,
+            msa_server_username=msa_server_username,
+            msa_server_password=msa_server_password,
+            api_key_header=api_key_header,
+            api_key_value=api_key_value,
+        )
+        return
+
     process_inputs(
         data=data,
         out_dir=out_dir,
@@ -1235,6 +1333,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         use_msa_server=use_msa_server,
         msa_server_url=msa_server_url,
         msa_pairing_strategy=msa_pairing_strategy,
+        run_data_pipeline=run_data_pipeline,
         msa_server_username=msa_server_username,
         msa_server_password=msa_server_password,
         api_key_header=api_key_header,
