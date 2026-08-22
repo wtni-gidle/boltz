@@ -394,6 +394,7 @@ def test_structure_skip_is_seed_sample_and_record_specific(tmp_path: Path) -> No
     filtered = filter_inputs_structure(
         manifest,
         tmp_path,
+        skip=True,
         seed=17,
         diffusion_samples=2,
         write_full_pae=True,
@@ -418,6 +419,7 @@ def test_structure_skip_honors_pdb_format(tmp_path: Path) -> None:
     filtered = filter_inputs_structure(
         manifest,
         tmp_path,
+        skip=True,
         seed=19,
         output_format="pdb",
     )
@@ -433,7 +435,7 @@ def test_affinity_skip_is_seed_and_record_specific(tmp_path: Path) -> None:
     affinity_dir.mkdir(parents=True)
     (affinity_dir / "seed-23_affinity.json").touch()
 
-    filtered = filter_inputs_affinity(manifest, tmp_path, seed=23)
+    filtered = filter_inputs_affinity(manifest, tmp_path, skip=True, seed=23)
 
     assert [record.id for record in filtered.records] == [incomplete.id]
 
@@ -449,16 +451,31 @@ def test_structure_skip_regenerates_missing_affinity_handoff(tmp_path: Path) -> 
     )
     target_dir = tmp_path / "predictions" / record.id
 
-    filtered = filter_inputs_structure(manifest, tmp_path, seed=29)
+    filtered = filter_inputs_structure(manifest, tmp_path, skip=True, seed=29)
     assert [item.id for item in filtered.records] == [record.id]
 
     (target_dir / "pre_affinity_seed-29.npz").touch()
-    filtered = filter_inputs_structure(manifest, tmp_path, seed=29)
+    filtered = filter_inputs_structure(manifest, tmp_path, skip=True, seed=29)
     assert not filtered.records
 
     (target_dir / "pre_affinity_seed-29.npz").unlink()
     affinity_dir = target_dir / "affinity"
     affinity_dir.mkdir()
     (affinity_dir / "seed-29_affinity.json").touch()
-    filtered = filter_inputs_structure(manifest, tmp_path, seed=29)
+    filtered = filter_inputs_structure(manifest, tmp_path, skip=True, seed=29)
     assert not filtered.records
+
+
+def test_structure_predictions_run_again_without_skip(tmp_path: Path) -> None:
+    record = _record("target")
+    manifest = Manifest([record])
+    _touch_complete_structure_outputs(
+        tmp_path,
+        record.id,
+        seed=31,
+        diffusion_samples=1,
+    )
+
+    filtered = filter_inputs_structure(manifest, tmp_path, seed=31)
+
+    assert [item.id for item in filtered.records] == [record.id]

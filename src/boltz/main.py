@@ -320,7 +320,7 @@ def check_inputs(data: Path) -> list[Path]:
 def filter_inputs_structure(  # noqa: C901
     manifest: Manifest,
     outdir: Path,
-    override: bool = False,
+    skip: bool = False,
     *,
     seed: Optional[int] = None,
     diffusion_samples: int = 1,
@@ -337,8 +337,8 @@ def filter_inputs_structure(  # noqa: C901
         The manifest of the input data.
     outdir : Path
         The output directory.
-    override: bool
-        Whether to override existing predictions.
+    skip: bool
+        Whether to skip seeds with complete existing predictions.
     seed : Optional[int]
         The random seed used for the predictions.
     diffusion_samples : int
@@ -401,18 +401,16 @@ def filter_inputs_structure(  # noqa: C901
 
     existing = {r.id for r in manifest.records if outputs_complete(r)}
 
-    # Remove them from the input data
-    if existing and not override:
+    # Remove complete records only when skip is explicitly requested.
+    if existing and skip:
         manifest = Manifest([r for r in manifest.records if r.id not in existing])
         msg = (
             f"Found some existing predictions ({len(existing)}), "
-            f"skipping and running only the missing ones, "
-            "if any. If you wish to override these existing "
-            "predictions, please set the --override flag."
+            "skipping them and running only the missing ones, if any."
         )
         click.echo(msg)
-    elif existing and override:
-        msg = f"Found {len(existing)} existing predictions, will override."
+    elif existing:
+        msg = f"Found {len(existing)} existing predictions, will run them again."
         click.echo(msg)
 
     return manifest
@@ -421,7 +419,7 @@ def filter_inputs_structure(  # noqa: C901
 def filter_inputs_affinity(
     manifest: Manifest,
     outdir: Path,
-    override: bool = False,
+    skip: bool = False,
     *,
     seed: Optional[int] = None,
 ) -> Manifest:
@@ -433,8 +431,8 @@ def filter_inputs_affinity(
         The manifest.
     outdir : Path
         The output directory.
-    override: bool
-        Whether to override existing predictions.
+    skip: bool
+        Whether to skip seeds with existing affinity predictions.
     seed : Optional[int]
         The random seed used for the affinity prediction.
 
@@ -460,19 +458,17 @@ def filter_inputs_affinity(
         ).is_file()
     }
 
-    # Remove them from the input data
-    if existing and not override:
+    # Remove complete records only when skip is explicitly requested.
+    if existing and skip:
         manifest = Manifest([r for r in manifest.records if r.id not in existing])
         num_skipped = len(existing)
         msg = (
             f"Found some existing affinity predictions ({num_skipped}), "
-            f"skipping and running only the missing ones, "
-            "if any. If you wish to override these existing "
-            "affinity predictions, please set the --override flag."
+            "skipping them and running only the missing ones, if any."
         )
         click.echo(msg)
-    elif existing and override:
-        msg = "Found existing affinity predictions, will override."
+    elif existing:
+        msg = "Found existing affinity predictions, will run them again."
         click.echo(msg)
 
     return manifest
@@ -977,9 +973,9 @@ def cli() -> None:
     default=2,
 )
 @click.option(
-    "--override",
+    "--skip",
     is_flag=True,
-    help="Whether to override existing found predictions. Default is False.",
+    help="Whether to skip seeds with complete existing outputs. Default is False.",
 )
 @click.option(
     "--seed",
@@ -1127,7 +1123,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     write_full_pde: bool = False,
     output_format: Literal["pdb", "mmcif"] = "mmcif",
     num_workers: int = 2,
-    override: bool = False,
+    skip: bool = False,
     seed: Optional[int] = None,
     use_msa_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
@@ -1255,7 +1251,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     filtered_manifest = filter_inputs_structure(
         manifest=manifest,
         outdir=out_dir,
-        override=override,
+        skip=skip,
         seed=seed,
         diffusion_samples=diffusion_samples,
         output_format=output_format,
@@ -1420,7 +1416,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         manifest_filtered = filter_inputs_affinity(
             manifest=manifest,
             outdir=out_dir,
-            override=override,
+            skip=skip,
             seed=seed,
         )
         if not manifest_filtered.records:

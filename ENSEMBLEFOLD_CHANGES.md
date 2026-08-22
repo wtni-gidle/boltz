@@ -30,7 +30,8 @@ remain available in each summary JSON.
 
 Structure skip checks the expected model, summary, and pLDDT file for every requested
 sample. It additionally checks PAE, PDE, or embeddings when those outputs are explicitly
-requested. It does not hash inputs or parse output contents.
+requested. It does not hash inputs or parse output contents. Prediction runs again by
+default; this check is activated only by the explicit `--skip` flag.
 
 Affinity still uses the highest-confidence structure internally. Its private hand-off
 is named `pre_affinity_seed-<seed>.npz`, preventing different seeds from overwriting one

@@ -7,7 +7,7 @@ Once `boltz` is installed, you can run predictions with:
 * `<INPUT_PATH>` can be either a single .yaml or .fasta file (YAML is preferred; FASTA is deprecated), or a directory, in which case predictions will be run on all `.yaml` and `.fasta` files inside.
 * If you include `--use_msa_server`, the MSA will be generated automatically via the mmseqs2 server. Without this flag, you must provide a pre-computed MSA.
 * If you include `--use_potentials`, Boltz will apply inference-time potentials to improve the physical plausibility of the predicted poses.
-* Without the `--override` options, Boltz will try to use the cached preprocessed files and existing predictions, if any are present in your output directory (name of your input by default). Add the `--override` flag to run the prediction from scratch, e.g. if you change some parameters or complex details without changing the output directory.
+* By default, Boltz runs structure and affinity prediction even if matching output files already exist. Add `--skip` to skip a seed only when all required model, summary confidence, and pLDDT files are present. Cached preprocessed inputs are still reused; use a separate output directory when changing MSA, templates, constraints, or other input details.
 
 
 ## Input format
@@ -163,7 +163,7 @@ Examples of common options include:
 | `--subsample_msa`          | `FLAG`       | `False` | Whether to subsample the MSA.                                                                                                                             |
 | `--num_subsampled_msa`          | `INTEGER`       | `1024` | The number of MSA sequences to subsample.                                                                                                                             |
 | `--no_kernels`          | `FLAG`       | `False` | Whether to not use trifast kernels for triangular updates..                                                                                                                             |
-| `--override`             | `FLAG`          | `False`                     | Whether to override existing predictions if found.                                                                                                                                  |
+| `--skip`                 | `FLAG`          | `False`                     | Whether to skip seeds with complete existing prediction outputs.                                                                                                                    |
 | `--use_msa_server`       | `FLAG`          | `False`                     | Whether to use the msa server to generate msa's.                                                                                                                                    |
 | `--msa_server_url`       | str             | `https://api.colabfold.com` | MSA server url. Used only if --use_msa_server is set.                                                                                                                               |
 | `--msa_pairing_strategy` | str             | `greedy`                    | Pairing strategy to use. Used only if --use_msa_server is set. Options are 'greedy' and 'complete'                                                                                  |
