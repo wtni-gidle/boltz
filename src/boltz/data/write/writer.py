@@ -21,6 +21,8 @@ class BoltzWriter(BasePredictionWriter):
         self,
         data_dir: str,
         output_dir: str,
+        *,
+        seed: int,
         output_format: Literal["pdb", "mmcif"] = "mmcif",
         boltz2: bool = False,
         write_embeddings: bool = False,
@@ -40,6 +42,7 @@ class BoltzWriter(BasePredictionWriter):
 
         self.data_dir = Path(data_dir)
         self.output_dir = Path(output_dir)
+        self.seed = seed
         self.output_format = output_format
         self.failed = 0
         self.boltz2 = boltz2
@@ -70,13 +73,13 @@ class BoltzWriter(BasePredictionWriter):
 
         pad_masks = prediction["masks"]
 
-        # Get ranking
+        # Select the best sample only for the internal affinity hand-off. The
+        # published sample names preserve diffusion order and do not expose a rank.
         if "confidence_score" in prediction:
-            argsort = torch.argsort(prediction["confidence_score"], descending=True)
-            idx_to_rank = {idx.item(): rank for rank, idx in enumerate(argsort)}
+            best_model_idx = int(torch.argmax(prediction["confidence_score"]).item())
         # Handles cases where confidence summary is False
         else:
-            idx_to_rank = {i: i for i in range(len(records))}
+            best_model_idx = 0
 
         # Iterate over the records
         for record, coord, pad_mask in zip(records, coords, pad_masks):
@@ -95,6 +98,17 @@ class BoltzWriter(BasePredictionWriter):
 
             # Remove masked chains completely
             structure = structure.remove_invalid_chains()
+
+            # Create the AF3 Pro-style public output directories. Keep the
+            # record directory itself for private pipeline hand-off files.
+            record_dir = self.output_dir / record.id
+            record_dir.mkdir(exist_ok=True)
+            models_dir = record_dir / "models"
+            summary_dir = record_dir / "summary_confidences"
+            full_data_dir = record_dir / "full_data"
+            models_dir.mkdir(exist_ok=True)
+            summary_dir.mkdir(exist_ok=True)
+            full_data_dir.mkdir(exist_ok=True)
 
             for model_idx in range(coord.shape[0]):
                 # Get model coord
@@ -146,46 +160,39 @@ class BoltzWriter(BasePredictionWriter):
                     )
                     chain_info.append(new_chain_info)
 
-                # Save the structure
-                struct_dir = self.output_dir / record.id
-                struct_dir.mkdir(exist_ok=True)
-
                 # Get plddt's
                 plddts = None
                 if "plddt" in prediction:
                     plddts = prediction["plddt"][model_idx]
 
                 # Create path name
-                outname = f"{record.id}_model_{idx_to_rank[model_idx]}"
+                outname = f"seed-{self.seed}_sample-{model_idx}"
 
                 # Save the structure
                 if self.output_format == "pdb":
-                    path = struct_dir / f"{outname}.pdb"
+                    path = models_dir / f"{outname}_model.pdb"
                     with path.open("w") as f:
                         f.write(
                             to_pdb(new_structure, plddts=plddts, boltz2=self.boltz2)
                         )
                 elif self.output_format == "mmcif":
-                    path = struct_dir / f"{outname}.cif"
+                    path = models_dir / f"{outname}_model.cif"
                     with path.open("w") as f:
                         f.write(
                             to_mmcif(new_structure, plddts=plddts, boltz2=self.boltz2)
                         )
                 else:
-                    path = struct_dir / f"{outname}.npz"
+                    path = models_dir / f"{outname}_model.npz"
                     np.savez_compressed(path, **asdict(new_structure))
 
-                if self.boltz2 and record.affinity and idx_to_rank[model_idx] == 0:
-                    path = struct_dir / f"pre_affinity_{record.id}.npz"
+                if self.boltz2 and record.affinity and model_idx == best_model_idx:
+                    path = record_dir / f"pre_affinity_seed-{self.seed}.npz"
                     np.savez_compressed(path, **asdict(new_structure))
                     np.array(atoms["coords"][:, None], dtype=Coords)
 
                 # Save confidence summary
                 if "plddt" in prediction:
-                    path = (
-                        struct_dir
-                        / f"confidence_{record.id}_model_{idx_to_rank[model_idx]}.json"
-                    )
+                    path = summary_dir / f"{outname}_summary_confidences.json"
                     confidence_summary_dict = {}
                     for key in [
                         "confidence_score",
@@ -222,39 +229,29 @@ class BoltzWriter(BasePredictionWriter):
 
                     # Save plddt
                     plddt = prediction["plddt"][model_idx]
-                    path = (
-                        struct_dir
-                        / f"plddt_{record.id}_model_{idx_to_rank[model_idx]}.npz"
-                    )
+                    path = full_data_dir / f"plddt_{outname}.npz"
                     np.savez_compressed(path, plddt=plddt.cpu().numpy())
 
                 # Save pae
                 if "pae" in prediction:
                     pae = prediction["pae"][model_idx]
-                    path = (
-                        struct_dir
-                        / f"pae_{record.id}_model_{idx_to_rank[model_idx]}.npz"
-                    )
+                    path = full_data_dir / f"pae_{outname}.npz"
                     np.savez_compressed(path, pae=pae.cpu().numpy())
 
                 # Save pde
                 if "pde" in prediction:
                     pde = prediction["pde"][model_idx]
-                    path = (
-                        struct_dir
-                        / f"pde_{record.id}_model_{idx_to_rank[model_idx]}.npz"
-                    )
+                    path = full_data_dir / f"pde_{outname}.npz"
                     np.savez_compressed(path, pde=pde.cpu().numpy())
-                
+
             # Save embeddings
             if self.write_embeddings and "s" in prediction and "z" in prediction:
                 s = prediction["s"].cpu().numpy()
                 z = prediction["z"].cpu().numpy()
 
-                path = (
-                    struct_dir
-                    / f"embeddings_{record.id}.npz"
-                )
+                embeddings_dir = record_dir / "embeddings"
+                embeddings_dir.mkdir(exist_ok=True)
+                path = embeddings_dir / f"seed-{self.seed}_embeddings.npz"
                 np.savez_compressed(path, s=s, z=z)
 
     def on_predict_epoch_end(
@@ -274,6 +271,8 @@ class BoltzAffinityWriter(BasePredictionWriter):
         self,
         data_dir: str,
         output_dir: str,
+        *,
+        seed: int,
     ) -> None:
         """Initialize the writer.
 
@@ -287,6 +286,7 @@ class BoltzAffinityWriter(BasePredictionWriter):
         self.failed = 0
         self.data_dir = Path(data_dir)
         self.output_dir = Path(output_dir)
+        self.seed = seed
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def write_on_batch_end(
@@ -326,9 +326,11 @@ class BoltzAffinityWriter(BasePredictionWriter):
             )
 
         # Save the affinity summary
-        struct_dir = self.output_dir / batch["record"][0].id
-        struct_dir.mkdir(exist_ok=True)
-        path = struct_dir / f"affinity_{batch['record'][0].id}.json"
+        record_dir = self.output_dir / batch["record"][0].id
+        record_dir.mkdir(exist_ok=True)
+        affinity_dir = record_dir / "affinity"
+        affinity_dir.mkdir(exist_ok=True)
+        path = affinity_dir / f"seed-{self.seed}_affinity.json"
 
         with path.open("w") as f:
             f.write(json.dumps(affinity_summary, indent=4))

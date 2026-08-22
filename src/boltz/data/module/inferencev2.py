@@ -32,6 +32,7 @@ def load_input(
     template_dir: Optional[Path] = None,
     extra_mols_dir: Optional[Path] = None,
     affinity: bool = False,
+    seed: Optional[int] = None,
 ) -> Input:
     """Load the given input data.
 
@@ -51,6 +52,8 @@ def load_input(
         The path to the extra molecules directory.
     affinity : bool
         Whether to load the affinity data.
+    seed : Optional[int]
+        The structure prediction seed used for an affinity hand-off.
 
     Returns
     -------
@@ -60,9 +63,12 @@ def load_input(
     """
     # Load the structure
     if affinity:
-        structure = StructureV2.load(
-            target_dir / record.id / f"pre_affinity_{record.id}.npz"
+        handoff_name = (
+            f"pre_affinity_seed-{seed}.npz"
+            if seed is not None
+            else f"pre_affinity_{record.id}.npz"
         )
+        structure = StructureV2.load(target_dir / record.id / handoff_name)
     else:
         structure = StructureV2.load(target_dir / f"{record.id}.npz")
 
@@ -168,6 +174,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         extra_mols_dir: Optional[Path] = None,
         override_method: Optional[str] = None,
         affinity: bool = False,
+        seed: Optional[int] = None,
     ) -> None:
         """Initialize the training dataset.
 
@@ -185,6 +192,8 @@ class PredictionDataset(torch.utils.data.Dataset):
             The path to the constraints directory.
         template_dir : Optional[Path]
             The path to the template directory.
+        seed : Optional[int]
+            The structure prediction seed used for an affinity hand-off.
 
         """
         super().__init__()
@@ -200,6 +209,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         self.extra_mols_dir = extra_mols_dir
         self.override_method = override_method
         self.affinity = affinity
+        self.seed = seed
         if self.affinity:
             self.cropper = AffinityCropper()
 
@@ -224,6 +234,7 @@ class PredictionDataset(torch.utils.data.Dataset):
             template_dir=self.template_dir,
             extra_mols_dir=self.extra_mols_dir,
             affinity=self.affinity,
+            seed=self.seed,
         )
 
         # Tokenize structure
@@ -329,6 +340,7 @@ class Boltz2InferenceDataModule(pl.LightningDataModule):
         extra_mols_dir: Optional[Path] = None,
         override_method: Optional[str] = None,
         affinity: bool = False,
+        seed: Optional[int] = None,
     ) -> None:
         """Initialize the DataModule.
 
@@ -352,6 +364,8 @@ class Boltz2InferenceDataModule(pl.LightningDataModule):
             The path to the extra molecules directory.
         override_method : Optional[str]
             The method to override.
+        seed : Optional[int]
+            The structure prediction seed used for an affinity hand-off.
 
         """
         super().__init__()
@@ -365,6 +379,7 @@ class Boltz2InferenceDataModule(pl.LightningDataModule):
         self.extra_mols_dir = extra_mols_dir
         self.override_method = override_method
         self.affinity = affinity
+        self.seed = seed
 
     def predict_dataloader(self) -> DataLoader:
         """Get the training dataloader.
@@ -385,6 +400,7 @@ class Boltz2InferenceDataModule(pl.LightningDataModule):
             extra_mols_dir=self.extra_mols_dir,
             override_method=self.override_method,
             affinity=self.affinity,
+            seed=self.seed,
         )
         return DataLoader(
             dataset,

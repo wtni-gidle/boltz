@@ -2,6 +2,7 @@ import multiprocessing
 import os
 import pickle
 import platform
+import secrets
 import tarfile
 import urllib.request
 import warnings
@@ -316,10 +317,17 @@ def check_inputs(data: Path) -> list[Path]:
     return data
 
 
-def filter_inputs_structure(
+def filter_inputs_structure(  # noqa: C901
     manifest: Manifest,
     outdir: Path,
     override: bool = False,
+    *,
+    seed: Optional[int] = None,
+    diffusion_samples: int = 1,
+    output_format: Literal["pdb", "mmcif"] = "mmcif",
+    write_full_pae: bool = False,
+    write_full_pde: bool = False,
+    write_embeddings: bool = False,
 ) -> Manifest:
     """Filter the manifest to only include missing predictions.
 
@@ -331,6 +339,18 @@ def filter_inputs_structure(
         The output directory.
     override: bool
         Whether to override existing predictions.
+    seed : Optional[int]
+        The random seed used for the predictions.
+    diffusion_samples : int
+        The number of diffusion samples expected for each record.
+    output_format : Literal["pdb", "mmcif"]
+        The structure output format.
+    write_full_pae : bool
+        Whether a PAE file is expected for every sample.
+    write_full_pde : bool
+        Whether a PDE file is expected for every sample.
+    write_embeddings : bool
+        Whether a seed-level embeddings file is expected.
 
     Returns
     -------
@@ -338,12 +358,48 @@ def filter_inputs_structure(
         The manifest of the filtered input data.
 
     """
-    # Check if existing predictions are found (only top-level prediction folders)
-    pred_dir = outdir / "predictions"
-    if pred_dir.exists():
-        existing = {d.name for d in pred_dir.iterdir() if d.is_dir()}
-    else:
-        existing = set()
+    structure_suffix = "pdb" if output_format == "pdb" else "cif"
+
+    def outputs_complete(record: Record) -> bool:
+        """Check the lightweight AF3-style output contract for one seed."""
+        target_dir = outdir / "predictions" / record.id
+        models_dir = target_dir / "models"
+        summary_dir = target_dir / "summary_confidences"
+        full_data_dir = target_dir / "full_data"
+
+        for sample_idx in range(diffusion_samples):
+            basename = f"seed-{seed}_sample-{sample_idx}"
+            required_paths = [
+                models_dir / f"{basename}_model.{structure_suffix}",
+                summary_dir / f"{basename}_summary_confidences.json",
+                full_data_dir / f"plddt_{basename}.npz",
+            ]
+            if write_full_pae:
+                required_paths.append(full_data_dir / f"pae_{basename}.npz")
+            if write_full_pde:
+                required_paths.append(full_data_dir / f"pde_{basename}.npz")
+            if not all(path.is_file() for path in required_paths):
+                return False
+
+        if write_embeddings:
+            embeddings_path = (
+                target_dir / "embeddings" / f"seed-{seed}_embeddings.npz"
+            )
+            if not embeddings_path.is_file():
+                return False
+
+        # Affinity consumes a private structure selected by confidence. If the
+        # public affinity result is still missing, keep the structure record in
+        # the manifest when that hand-off file also needs to be regenerated.
+        if record.affinity:
+            affinity_path = target_dir / "affinity" / f"seed-{seed}_affinity.json"
+            handoff_path = target_dir / f"pre_affinity_seed-{seed}.npz"
+            if not affinity_path.is_file() and not handoff_path.is_file():
+                return False
+
+        return True
+
+    existing = {r.id for r in manifest.records if outputs_complete(r)}
 
     # Remove them from the input data
     if existing and not override:
@@ -366,6 +422,8 @@ def filter_inputs_affinity(
     manifest: Manifest,
     outdir: Path,
     override: bool = False,
+    *,
+    seed: Optional[int] = None,
 ) -> Manifest:
     """Check the input data and output directory for affinity.
 
@@ -377,6 +435,8 @@ def filter_inputs_affinity(
         The output directory.
     override: bool
         Whether to override existing predictions.
+    seed : Optional[int]
+        The random seed used for the affinity prediction.
 
     Returns
     -------
@@ -391,7 +451,13 @@ def filter_inputs_affinity(
         r.id
         for r in manifest.records
         if r.affinity
-        and (outdir / "predictions" / r.id / f"affinity_{r.id}.json").exists()
+        and (
+            outdir
+            / "predictions"
+            / r.id
+            / "affinity"
+            / f"seed-{seed}_affinity.json"
+        ).is_file()
     }
 
     # Remove them from the input data
@@ -918,7 +984,10 @@ def cli() -> None:
 @click.option(
     "--seed",
     type=int,
-    help="Seed to use for random number generator. Default is None (no seeding).",
+    help=(
+        "Seed to use for random number generation. If omitted, a random seed is "
+        "generated and reported."
+    ),
     default=None,
 )
 @click.option(
@@ -1098,9 +1167,12 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     # Set rdkit pickle logic
     Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 
-    # Set seed if desired
-    if seed is not None:
-        seed_everything(seed)
+    # Resolve an omitted seed to a concrete value so output names and skip
+    # checks never collapse independent random runs into "seed-None".
+    if seed is None:
+        seed = secrets.randbits(32)
+        click.echo(f"No seed provided; using generated seed {seed}.")
+    seed_everything(seed)
 
     for key in ["CUEQ_DEFAULT_CONFIG", "CUEQ_DISABLE_AOT_TUNING"]:
         # Disable kernel tuning by default,
@@ -1184,6 +1256,12 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         manifest=manifest,
         outdir=out_dir,
         override=override,
+        seed=seed,
+        diffusion_samples=diffusion_samples,
+        output_format=output_format,
+        write_full_pae=write_full_pae,
+        write_full_pde=write_full_pde,
+        write_embeddings=write_embeddings,
     )
 
     # Load processed data
@@ -1250,6 +1328,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         output_format=output_format,
         boltz2=model == "boltz2",
         write_embeddings=write_embeddings,
+        seed=seed,
     )
 
     # Set up trainer
@@ -1342,10 +1421,15 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             manifest=manifest,
             outdir=out_dir,
             override=override,
+            seed=seed,
         )
         if not manifest_filtered.records:
             click.echo("Found existing affinity predictions for all inputs, skipping.")
             return
+
+        # Make affinity reproducible whether structure inference ran in this
+        # process or was skipped because its files already existed.
+        seed_everything(seed)
 
         msg = f"Running affinity prediction for {len(manifest_filtered.records)} input"
         msg += "s." if len(manifest_filtered.records) > 1 else "."
@@ -1354,6 +1438,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         pred_writer = BoltzAffinityWriter(
             data_dir=processed.targets_dir,
             output_dir=out_dir / "predictions",
+            seed=seed,
         )
 
         data_module = Boltz2InferenceDataModule(
@@ -1367,6 +1452,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             extra_mols_dir=processed.extra_mols_dir,
             override_method="other",
             affinity=True,
+            seed=seed,
         )
 
         predict_affinity_args = {
