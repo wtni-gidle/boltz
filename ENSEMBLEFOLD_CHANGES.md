@@ -32,11 +32,16 @@ the `_data` suffix, verifies the unpaired query, creates the native keyed CSV, r
 processed MSA arrays, and then follows the original inference path. The keyed CSV remains
 a runtime artifact.
 
+Prepared MSA paths may point to plain text, gzip, xz, or zstd data. Compression is
+detected from file magic bytes, not the filename: a real zstd stream is decompressed even
+without a `.zst` suffix, while a plain-text file named `.a3m.zst` is read as plain text.
+
 ## Output layout
 
 The requested output directory is a collection root. For `target.yaml` or
 `target_data.yaml`, job artifacts are written below `results/target/`, and prediction
-files remain below `results/target/predictions/<record.id>/`:
+files for the normal single-record job are written directly below
+`results/target/predictions/`:
 
 ```text
 models/seed-<seed>_sample-<sample>_model.cif

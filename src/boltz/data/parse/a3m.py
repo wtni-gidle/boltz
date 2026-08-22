@@ -1,10 +1,10 @@
-import gzip
 from pathlib import Path
 from typing import Optional, TextIO
 
 import numpy as np
 
 from boltz.data import const
+from boltz.data.parse.compression import open_maybe_compressed_text
 from boltz.data.types import MSA, MSADeletion, MSAResidue, MSASequence
 
 
@@ -123,12 +123,8 @@ def parse_a3m(
         The MSA object.
 
     """
-    # Read the file
-    if path.suffix == ".gz":
-        with gzip.open(str(path), "rt") as f:
-            msa = _parse_a3m(f, taxonomy, max_seqs)
-    else:
-        with path.open("r") as f:
-            msa = _parse_a3m(f, taxonomy, max_seqs)
+    # Compression is detected from magic bytes rather than the filename.
+    with open_maybe_compressed_text(path) as f:
+        msa = _parse_a3m(f, taxonomy, max_seqs)
 
     return msa

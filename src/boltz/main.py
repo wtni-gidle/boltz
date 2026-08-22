@@ -366,10 +366,13 @@ def filter_inputs_structure(  # noqa: C901
 
     """
     structure_suffix = "pdb" if output_format == "pdb" else "cif"
+    use_record_subdir = len(manifest.records) > 1
 
     def outputs_complete(record: Record) -> bool:
         """Check the lightweight AF3-style output contract for one seed."""
-        target_dir = outdir / "predictions" / record.id
+        target_dir = outdir / "predictions"
+        if use_record_subdir:
+            target_dir = target_dir / record.id
         models_dir = target_dir / "models"
         summary_dir = target_dir / "summary_confidences"
         full_data_dir = target_dir / "full_data"
@@ -450,6 +453,7 @@ def filter_inputs_affinity(
 
     """
     click.echo("Checking input data for affinity.")
+    use_record_subdir = len(manifest.records) > 1
 
     # Get all affinity targets
     existing = {
@@ -459,7 +463,7 @@ def filter_inputs_affinity(
         and (
             outdir
             / "predictions"
-            / r.id
+            / (r.id if use_record_subdir else "")
             / "affinity"
             / f"seed-{seed}_affinity.json"
         ).is_file()
@@ -686,7 +690,7 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
             msa_id_map[msa_id] = f"{target_id}_{msa_idx}"
             if not processed.exists() or not run_data_pipeline:
                 # Parse A3M
-                if msa_path.suffix == ".a3m":
+                if msa_path.suffix.lower() in {".a3m", ".gz", ".xz", ".zst"}:
                     msa: MSA = parse_a3m(
                         msa_path,
                         taxonomy=None,
@@ -695,7 +699,10 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
                 elif msa_path.suffix == ".csv":
                     msa: MSA = parse_csv(msa_path, max_seqs=max_msa_seqs)
                 else:
-                    msg = f"MSA file {msa_path} not supported, only a3m or csv."
+                    msg = (
+                        f"MSA file {msa_path} not supported, only a3m, "
+                        "a3m.gz, a3m.xz, a3m.zst, or csv."
+                    )
                     raise RuntimeError(msg)  # noqa: TRY301
 
                 msa.dump(processed)
@@ -1368,6 +1375,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
 
     # Load manifest
     manifest = Manifest.load(out_dir / "processed" / "manifest.json")
+    use_record_subdir = len(manifest.records) > 1
 
     # Filter out existing predictions
     filtered_manifest = filter_inputs_structure(
@@ -1447,6 +1455,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         boltz2=model == "boltz2",
         write_embeddings=write_embeddings,
         seed=seed,
+        use_record_subdir=use_record_subdir,
     )
 
     # Set up trainer
@@ -1557,6 +1566,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             data_dir=processed.targets_dir,
             output_dir=out_dir / "predictions",
             seed=seed,
+            use_record_subdir=use_record_subdir,
         )
 
         data_module = Boltz2InferenceDataModule(
@@ -1571,6 +1581,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             override_method="other",
             affinity=True,
             seed=seed,
+            use_record_subdir=use_record_subdir,
         )
 
         predict_affinity_args = {

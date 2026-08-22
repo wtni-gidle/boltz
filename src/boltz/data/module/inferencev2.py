@@ -33,6 +33,7 @@ def load_input(
     extra_mols_dir: Optional[Path] = None,
     affinity: bool = False,
     seed: Optional[int] = None,
+    use_record_subdir: bool = True,
 ) -> Input:
     """Load the given input data.
 
@@ -54,6 +55,8 @@ def load_input(
         Whether to load the affinity data.
     seed : Optional[int]
         The structure prediction seed used for an affinity hand-off.
+    use_record_subdir : bool
+        Whether prediction hand-off files are nested below ``record.id``.
 
     Returns
     -------
@@ -68,7 +71,8 @@ def load_input(
             if seed is not None
             else f"pre_affinity_{record.id}.npz"
         )
-        structure = StructureV2.load(target_dir / record.id / handoff_name)
+        record_dir = target_dir / record.id if use_record_subdir else target_dir
+        structure = StructureV2.load(record_dir / handoff_name)
     else:
         structure = StructureV2.load(target_dir / f"{record.id}.npz")
 
@@ -175,6 +179,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         override_method: Optional[str] = None,
         affinity: bool = False,
         seed: Optional[int] = None,
+        use_record_subdir: bool = True,
     ) -> None:
         """Initialize the training dataset.
 
@@ -210,6 +215,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         self.override_method = override_method
         self.affinity = affinity
         self.seed = seed
+        self.use_record_subdir = use_record_subdir
         if self.affinity:
             self.cropper = AffinityCropper()
 
@@ -235,6 +241,7 @@ class PredictionDataset(torch.utils.data.Dataset):
             extra_mols_dir=self.extra_mols_dir,
             affinity=self.affinity,
             seed=self.seed,
+            use_record_subdir=self.use_record_subdir,
         )
 
         # Tokenize structure
@@ -341,6 +348,7 @@ class Boltz2InferenceDataModule(pl.LightningDataModule):
         override_method: Optional[str] = None,
         affinity: bool = False,
         seed: Optional[int] = None,
+        use_record_subdir: bool = True,
     ) -> None:
         """Initialize the DataModule.
 
@@ -380,6 +388,7 @@ class Boltz2InferenceDataModule(pl.LightningDataModule):
         self.override_method = override_method
         self.affinity = affinity
         self.seed = seed
+        self.use_record_subdir = use_record_subdir
 
     def predict_dataloader(self) -> DataLoader:
         """Get the training dataloader.
@@ -401,6 +410,7 @@ class Boltz2InferenceDataModule(pl.LightningDataModule):
             override_method=self.override_method,
             affinity=self.affinity,
             seed=self.seed,
+            use_record_subdir=self.use_record_subdir,
         )
         return DataLoader(
             dataset,

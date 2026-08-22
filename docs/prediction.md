@@ -77,6 +77,7 @@ For proteins:
 * To use a precomputed custom MSA, set `msa: MSA_PATH` pointing to a `.a3m` file. If you have more than one protein chain, use a CSV format instead of a3m with two columns: `sequence` (protein sequence) and `key` (a unique identifier for matching rows across chains). Sequences with the same key are mutually aligned.
 * To force single-sequence mode (not recommended, as it reduces accuracy), set `msa: empty`.
 * A generated `*_data.yaml` represents an automatically searched MSA as `msa: {paired: PATH, unpaired: PATH}`. This mapping is a wrapper extension intended as the data-pipeline/inference hand-off. The normal scalar `msa: PATH` form remains supported.
+* Prepared A3M paths may contain plain text, gzip, xz, or zstd data. Compression is detected from magic bytes rather than the filename, so both a real compressed `.a3m.zst` and a plain-text file carrying that suffix are handled correctly.
 
 The `modifications` field is optional and allows specification of modified residues in polymers (`protein`, `dna`, or `rna`).  
 - `position`: index of the residue (starting from 1)  
@@ -189,16 +190,15 @@ results/
     ├── processed/
     ├── lightning_logs/
     └── predictions/
-        └── target/
-            ├── models/seed-[seed]_sample-0_model.cif
-            ├── summary_confidences/seed-[seed]_sample-0_summary_confidences.json
-            ├── full_data/plddt_seed-[seed]_sample-0.npz
-            ├── full_data/pae_seed-[seed]_sample-0.npz
-            ├── full_data/pde_seed-[seed]_sample-0.npz
-            ├── embeddings/seed-[seed]_embeddings.npz
-            └── affinity/seed-[seed]_affinity.json
+        ├── models/seed-[seed]_sample-0_model.cif
+        ├── summary_confidences/seed-[seed]_sample-0_summary_confidences.json
+        ├── full_data/plddt_seed-[seed]_sample-0.npz
+        ├── full_data/pae_seed-[seed]_sample-0.npz
+        ├── full_data/pde_seed-[seed]_sample-0.npz
+        ├── embeddings/seed-[seed]_embeddings.npz
+        └── affinity/seed-[seed]_affinity.json
 ```
-The `predictions` folder contains a unique folder for each input file. Samples retain their original diffusion sample index; they are not renamed by confidence rank. Confidence scores remain available in the summary JSON. The `processed` folder contains the processed input files used during inference.
+For the normal one-target job, prediction categories are written directly below `predictions/`. Legacy multi-record invocations retain a `<record.id>/` subdirectory to prevent filename collisions. Samples retain their original diffusion sample index; they are not renamed by confidence rank. Confidence scores remain available in the summary JSON. The `processed` folder contains the processed input files used during inference.
 
 Each output folder includes a confidence `.json` file with aggregated confidence scores for that sample. Its structure is:
 ```yaml

@@ -139,6 +139,7 @@ def test_writer_uses_seed_sample_layout_and_preserves_full_data_files(
         output_format=output_format,
         boltz2=True,
         write_embeddings=True,
+        use_record_subdir=False,
     )
     writer.write_on_batch_end(
         None,
@@ -150,7 +151,7 @@ def test_writer_uses_seed_sample_layout_and_preserves_full_data_files(
         0,
     )
 
-    target_dir = output_dir / record.id
+    target_dir = output_dir
     for sample_idx in range(2):
         basename = f"seed-42_sample-{sample_idx}"
         assert (target_dir / "models" / f"{basename}_model.{suffix}").read_text() == (
@@ -200,6 +201,7 @@ def test_writer_omits_optional_arrays_and_embeddings_when_absent(
         seed=7,
         boltz2=True,
         write_embeddings=True,
+        use_record_subdir=False,
     )
     writer.write_on_batch_end(
         None,
@@ -215,7 +217,7 @@ def test_writer_omits_optional_arrays_and_embeddings_when_absent(
         0,
     )
 
-    target_dir = output_dir / record.id
+    target_dir = output_dir
     assert len(list((target_dir / "full_data").glob("plddt_*.npz"))) == 2
     assert not list((target_dir / "full_data").glob("pae_*.npz"))
     assert not list((target_dir / "full_data").glob("pde_*.npz"))
@@ -279,6 +281,7 @@ def test_affinity_handoff_uses_best_confidence_sample(
         output_dir=str(output_dir),
         seed=11,
         boltz2=True,
+        use_record_subdir=False,
     )
     writer.write_on_batch_end(
         None,
@@ -290,7 +293,7 @@ def test_affinity_handoff_uses_best_confidence_sample(
         0,
     )
 
-    handoff_path = output_dir / record.id / "pre_affinity_seed-11.npz"
+    handoff_path = output_dir / "pre_affinity_seed-11.npz"
     handoff = StructureV2.load(handoff_path)
     np.testing.assert_allclose(handoff.atoms["coords"], [[9.0, 0.0, 0.0]])
 
@@ -302,6 +305,7 @@ def test_affinity_handoff_uses_best_confidence_sample(
         msa_dir=msa_dir,
         affinity=True,
         seed=11,
+        use_record_subdir=False,
     )
     np.testing.assert_allclose(
         affinity_input.structure.atoms["coords"],
@@ -316,6 +320,7 @@ def test_affinity_writer_uses_seed_level_output(tmp_path: Path) -> None:
         data_dir=str(tmp_path / "data"),
         output_dir=str(output_dir),
         seed=13,
+        use_record_subdir=False,
     )
     writer.write_on_batch_end(
         None,
@@ -331,7 +336,7 @@ def test_affinity_writer_uses_seed_level_output(tmp_path: Path) -> None:
         0,
     )
 
-    assert (output_dir / record.id / "affinity" / "seed-13_affinity.json").is_file()
+    assert (output_dir / "affinity" / "seed-13_affinity.json").is_file()
 
 
 def _touch_complete_structure_outputs(
@@ -344,8 +349,11 @@ def _touch_complete_structure_outputs(
     include_pae: bool = False,
     include_pde: bool = False,
     include_embeddings: bool = False,
+    use_record_subdir: bool = True,
 ) -> None:
-    target_dir = out_dir / "predictions" / record_id
+    target_dir = out_dir / "predictions"
+    if use_record_subdir:
+        target_dir = target_dir / record_id
     models_dir = target_dir / "models"
     summary_dir = target_dir / "summary_confidences"
     full_data_dir = target_dir / "full_data"
@@ -414,6 +422,7 @@ def test_structure_skip_honors_pdb_format(tmp_path: Path) -> None:
         seed=19,
         diffusion_samples=1,
         suffix="pdb",
+        use_record_subdir=False,
     )
 
     filtered = filter_inputs_structure(
@@ -440,6 +449,18 @@ def test_affinity_skip_is_seed_and_record_specific(tmp_path: Path) -> None:
     assert [record.id for record in filtered.records] == [incomplete.id]
 
 
+def test_single_record_affinity_skip_uses_flat_prediction_dir(tmp_path: Path) -> None:
+    record = _record("target", affinity=True)
+    manifest = Manifest([record])
+    affinity_dir = tmp_path / "predictions" / "affinity"
+    affinity_dir.mkdir(parents=True)
+    (affinity_dir / "seed-23_affinity.json").touch()
+
+    filtered = filter_inputs_affinity(manifest, tmp_path, skip=True, seed=23)
+
+    assert not filtered.records
+
+
 def test_structure_skip_regenerates_missing_affinity_handoff(tmp_path: Path) -> None:
     record = _record("target", affinity=True)
     manifest = Manifest([record])
@@ -448,8 +469,9 @@ def test_structure_skip_regenerates_missing_affinity_handoff(tmp_path: Path) -> 
         record.id,
         seed=29,
         diffusion_samples=1,
+        use_record_subdir=False,
     )
-    target_dir = tmp_path / "predictions" / record.id
+    target_dir = tmp_path / "predictions"
 
     filtered = filter_inputs_structure(manifest, tmp_path, skip=True, seed=29)
     assert [item.id for item in filtered.records] == [record.id]
@@ -474,6 +496,7 @@ def test_structure_predictions_run_again_without_skip(tmp_path: Path) -> None:
         record.id,
         seed=31,
         diffusion_samples=1,
+        use_record_subdir=False,
     )
 
     filtered = filter_inputs_structure(manifest, tmp_path, seed=31)

@@ -26,6 +26,7 @@ class BoltzWriter(BasePredictionWriter):
         output_format: Literal["pdb", "mmcif"] = "mmcif",
         boltz2: bool = False,
         write_embeddings: bool = False,
+        use_record_subdir: bool = True,
     ) -> None:
         """Initialize the writer.
 
@@ -48,6 +49,7 @@ class BoltzWriter(BasePredictionWriter):
         self.boltz2 = boltz2
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.write_embeddings = write_embeddings
+        self.use_record_subdir = use_record_subdir
 
     def write_on_batch_end(
         self,
@@ -99,9 +101,14 @@ class BoltzWriter(BasePredictionWriter):
             # Remove masked chains completely
             structure = structure.remove_invalid_chains()
 
-            # Create the AF3 Pro-style public output directories. Keep the
-            # record directory itself for private pipeline hand-off files.
-            record_dir = self.output_dir / record.id
+            # A normal wrapper job contains one record, so predictions are
+            # written directly below predictions/. Retain record subdirectories
+            # only for legacy multi-record invocations to prevent collisions.
+            record_dir = (
+                self.output_dir / record.id
+                if self.use_record_subdir
+                else self.output_dir
+            )
             record_dir.mkdir(exist_ok=True)
             models_dir = record_dir / "models"
             summary_dir = record_dir / "summary_confidences"
@@ -273,6 +280,7 @@ class BoltzAffinityWriter(BasePredictionWriter):
         output_dir: str,
         *,
         seed: int,
+        use_record_subdir: bool = True,
     ) -> None:
         """Initialize the writer.
 
@@ -287,6 +295,7 @@ class BoltzAffinityWriter(BasePredictionWriter):
         self.data_dir = Path(data_dir)
         self.output_dir = Path(output_dir)
         self.seed = seed
+        self.use_record_subdir = use_record_subdir
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def write_on_batch_end(
@@ -326,7 +335,11 @@ class BoltzAffinityWriter(BasePredictionWriter):
             )
 
         # Save the affinity summary
-        record_dir = self.output_dir / batch["record"][0].id
+        record_dir = (
+            self.output_dir / batch["record"][0].id
+            if self.use_record_subdir
+            else self.output_dir
+        )
         record_dir.mkdir(exist_ok=True)
         affinity_dir = record_dir / "affinity"
         affinity_dir.mkdir(exist_ok=True)

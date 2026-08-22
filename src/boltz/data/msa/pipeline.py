@@ -3,6 +3,7 @@ from typing import Optional
 
 from boltz.data import const
 from boltz.data.msa.mmseqs2 import run_mmseqs2
+from boltz.data.parse.compression import open_maybe_compressed_text
 
 
 def component_paths(msa_dir: Path, msa_id: str) -> tuple[Path, Path]:
@@ -78,7 +79,7 @@ def read_a3m_sequences(path: Path) -> list[str]:
     """Read sequences from an A3M file, accepting wrapped sequence lines."""
     sequences: list[str] = []
     current: list[str] = []
-    with path.open() as handle:
+    with open_maybe_compressed_text(path) as handle:
         for raw_line in handle:
             line = raw_line.strip()
             if not line:

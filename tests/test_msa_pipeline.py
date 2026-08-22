@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+import zstandard as zstd
 from click.testing import CliRunner
 
 from boltz import main as main_module
@@ -10,9 +11,11 @@ from boltz.data.msa import pipeline
 from boltz.data.msa.pipeline import (
     component_paths,
     materialize_msa_csv,
+    read_a3m_sequences,
     search_msa_components,
 )
 from boltz.data.parse import yaml as yaml_parser
+from boltz.data.parse.a3m import parse_a3m
 from boltz.data.parse.yaml import materialize_prepared_msas, target_name_from_path
 
 
@@ -70,6 +73,26 @@ def test_monomer_search_writes_empty_paired_file(
     assert paired_path.read_text() == ""
     assert unpaired_path.read_text().startswith(">q\nAAAA")
     assert [call[2] for call in calls] == [False]
+
+
+@pytest.mark.parametrize("filename", ["compressed.a3m.zst", "compressed.a3m"])
+def test_a3m_reader_detects_zstd_from_magic_bytes(
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    path = tmp_path / filename
+    content = ">query\nAAAA\n>hit\nAA-A\n"
+    path.write_bytes(zstd.ZstdCompressor().compress(content.encode()))
+
+    assert read_a3m_sequences(path) == ["AAAA", "AA-A"]
+    assert len(parse_a3m(path, taxonomy=None).sequences) == 2
+
+
+def test_plain_text_with_zst_suffix_is_not_decompressed(tmp_path: Path) -> None:
+    path = tmp_path / "plain.a3m.zst"
+    path.write_text(">query\nAAAA\n")
+
+    assert read_a3m_sequences(path) == ["AAAA"]
 
 
 def test_materialize_csv_preserves_paired_row_keys_and_replaces_unpaired(
