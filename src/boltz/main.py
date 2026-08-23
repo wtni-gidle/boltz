@@ -4,6 +4,7 @@ import pickle
 import platform
 import secrets
 import tarfile
+import tempfile
 import urllib.request
 import warnings
 from dataclasses import asdict, dataclass
@@ -542,12 +543,19 @@ def parse_input_target(
     ccd: dict,
     mol_dir: Path,
     boltz2: bool,
+    msa_materialization_dir: Optional[Path] = None,
 ) -> Target:
     """Parse one supported Boltz input file."""
     if path.suffix.lower() in (".fa", ".fas", ".fasta"):
         return parse_fasta(path, ccd, mol_dir, boltz2)
     if path.suffix.lower() in (".yml", ".yaml"):
-        return parse_yaml(path, ccd, mol_dir, boltz2)
+        return parse_yaml(
+            path,
+            ccd,
+            mol_dir,
+            boltz2,
+            msa_materialization_dir=msa_materialization_dir,
+        )
     if path.is_dir():
         msg = f"Found directory {path} instead of .fasta or .yaml."
         raise RuntimeError(msg)
@@ -634,7 +642,13 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
     records_dir: Path,
 ) -> None:
     try:
-        target = parse_input_target(path, ccd, mol_dir, boltz2)
+        target = parse_input_target(
+            path,
+            ccd,
+            mol_dir,
+            boltz2,
+            msa_materialization_dir=msa_dir,
+        )
 
         # Get target id
         target_id = target.record.id
@@ -1355,9 +1369,28 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         )
         return
 
+    # Inference-only runs rebuild all derived features from the current
+    # ``*_data.yaml`` and its referenced MSA/template inputs. Keep those
+    # artifacts private to this process so concurrent seeds never share CSV,
+    # NPZ, record, manifest, or Lightning log files. TemporaryDirectory uses
+    # the system TMPDIR on ordinary servers; Slurm jobs prefer SLURM_TMPDIR.
+    temporary_workspace = None
+    processing_out_dir = out_dir
+    if run_inference and not run_data_pipeline:
+        slurm_tmp = os.environ.get("SLURM_TMPDIR")
+        temp_base = Path(slurm_tmp) if slurm_tmp else None
+        if temp_base is not None and not temp_base.is_dir():
+            temp_base = None
+        temporary_workspace = tempfile.TemporaryDirectory(
+            prefix=f"boltz-{out_dir.name}-",
+            dir=temp_base,
+        )
+        processing_out_dir = Path(temporary_workspace.name)
+        click.echo("Using process-private temporary preprocessing directory.")
+
     process_inputs(
         data=data,
-        out_dir=out_dir,
+        out_dir=processing_out_dir,
         ccd_path=ccd_path,
         mol_dir=mol_dir,
         use_msa_server=use_msa_server,
@@ -1374,7 +1407,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     )
 
     # Load manifest
-    manifest = Manifest.load(out_dir / "processed" / "manifest.json")
+    manifest = Manifest.load(processing_out_dir / "processed" / "manifest.json")
     use_record_subdir = len(manifest.records) > 1
 
     # Filter out existing predictions
@@ -1391,7 +1424,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     )
 
     # Load processed data
-    processed_dir = out_dir / "processed"
+    processed_dir = processing_out_dir / "processed"
     processed = BoltzProcessedInput(
         manifest=filtered_manifest,
         targets_dir=processed_dir / "structures",
@@ -1460,7 +1493,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
 
     # Set up trainer
     trainer = Trainer(
-        default_root_dir=out_dir,
+        default_root_dir=processing_out_dir,
         strategy=strategy,
         callbacks=[pred_writer],
         accelerator=accelerator,
@@ -1552,6 +1585,8 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         )
         if not manifest_filtered.records:
             click.echo("Found existing affinity predictions for all inputs, skipping.")
+            if temporary_workspace is not None:
+                temporary_workspace.cleanup()
             return
 
         # Make affinity reproducible whether structure inference ran in this
@@ -1623,6 +1658,9 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             datamodule=data_module,
             return_predictions=False,
         )
+
+    if temporary_workspace is not None:
+        temporary_workspace.cleanup()
 
 
 if __name__ == "__main__":

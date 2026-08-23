@@ -17,6 +17,7 @@ from boltz.data.msa.pipeline import (
 from boltz.data.parse import yaml as yaml_parser
 from boltz.data.parse.a3m import parse_a3m
 from boltz.data.parse.yaml import materialize_prepared_msas, target_name_from_path
+from boltz.data.types import Manifest
 
 
 def test_search_saves_separate_paired_and_unpaired_a3m(
@@ -200,6 +201,64 @@ def test_data_only_cli_stops_after_preparing_msas(
     assert "No seed provided" not in result.output
 
 
+@pytest.mark.parametrize("use_slurm_tmp", [False, True])
+def test_inference_only_uses_and_cleans_private_processed_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    use_slurm_tmp: bool,
+) -> None:
+    input_path = tmp_path / "target_data.yaml"
+    input_path.write_text("sequences: []\n")
+    output_root = tmp_path / "out"
+    captured = {}
+    if use_slurm_tmp:
+        slurm_tmp = tmp_path / "slurm_tmp"
+        slurm_tmp.mkdir()
+        monkeypatch.setenv("SLURM_TMPDIR", str(slurm_tmp))
+    else:
+        monkeypatch.delenv("SLURM_TMPDIR", raising=False)
+
+    monkeypatch.setattr(main_module, "download_boltz2", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main_module, "seed_everything", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main_module, "Trainer", lambda **_kwargs: SimpleNamespace())
+
+    def fake_process_inputs(*, out_dir: Path, **_kwargs) -> Manifest:
+        captured["work_dir"] = out_dir
+        processed_dir = out_dir / "processed"
+        processed_dir.mkdir(parents=True)
+        manifest = Manifest([])
+        manifest.dump(processed_dir / "manifest.json")
+        return manifest
+
+    monkeypatch.setattr(main_module, "process_inputs", fake_process_inputs)
+
+    result = CliRunner().invoke(
+        main_module.cli,
+        [
+            "predict",
+            str(input_path),
+            "--out_dir",
+            str(output_root),
+            "--cache",
+            str(tmp_path / "cache"),
+            "--seed",
+            "7",
+            "-D",
+            "false",
+            "-P",
+            "true",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    work_dir = captured["work_dir"]
+    assert work_dir != output_root / "target"
+    if use_slurm_tmp:
+        assert work_dir.parent == tmp_path / "slurm_tmp"
+    assert not work_dir.exists()
+    assert not (output_root / "target" / "processed").exists()
+
+
 def test_prepare_msa_inputs_writes_executable_yaml_without_csv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -292,6 +351,43 @@ def test_prepared_yaml_materializes_relative_msa_paths(tmp_path: Path) -> None:
     ]
     assert schema["sequences"][0]["protein"]["msa"] == str(csv_path)
     assert target_name_from_path(data_path) == "target"
+
+
+def test_prepared_yaml_materializes_msa_in_private_directory(tmp_path: Path) -> None:
+    msa_dir = tmp_path / "msa"
+    msa_dir.mkdir()
+    paired_path = msa_dir / "target_0_paired.a3m.zst"
+    unpaired_path = msa_dir / "target_0_unpaired.a3m.zst"
+    compressor = zstd.ZstdCompressor()
+    paired_path.write_bytes(compressor.compress(b""))
+    unpaired_path.write_bytes(compressor.compress(b">query\nAAAA\n>hit\nAA-A\n"))
+    private_dir = tmp_path / "private" / "msa"
+    data_path = tmp_path / "target_data.yaml"
+    schema = {
+        "sequences": [
+            {
+                "protein": {
+                    "id": "A",
+                    "sequence": "AAAA",
+                    "msa": {
+                        "paired": "msa/target_0_paired.a3m.zst",
+                        "unpaired": "msa/target_0_unpaired.a3m.zst",
+                    },
+                }
+            }
+        ]
+    }
+
+    materialize_prepared_msas(data_path, schema, output_dir=private_dir)
+
+    csv_path = private_dir / "target_0_paired.csv"
+    assert csv_path.read_text().splitlines() == [
+        "key,sequence",
+        "-1,AAAA",
+        "-1,AA-A",
+    ]
+    assert schema["sequences"][0]["protein"]["msa"] == str(csv_path)
+    assert not list(msa_dir.glob("*.csv"))
 
 
 def test_parse_data_yaml_uses_original_target_name(

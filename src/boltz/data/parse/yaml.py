@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 
 import yaml
 from rdkit.Chem.rdchem import Mol
@@ -23,8 +24,17 @@ def _resolve_path(path: str, input_dir: Path) -> Path:
     return resolved
 
 
-def materialize_prepared_msas(path: Path, schema: dict) -> None:
-    """Resolve paired/unpaired MSA mappings to native Boltz CSV files."""
+def materialize_prepared_msas(
+    path: Path,
+    schema: dict,
+    output_dir: Optional[Path] = None,
+) -> None:
+    """Resolve paired/unpaired MSA mappings to native Boltz CSV files.
+
+    When ``output_dir`` is provided, generated CSV files are kept away from the
+    prepared A3M inputs. Inference uses this to put all materialized data in its
+    process-private temporary directory.
+    """
     csv_by_sequence: dict[str, Path] = {}
     spec_by_sequence: dict[str, tuple[Path, Path]] = {}
 
@@ -55,9 +65,13 @@ def materialize_prepared_msas(path: Path, schema: dict) -> None:
             paired_suffix = "_paired.a3m"
             if paired_path.name.endswith(paired_suffix):
                 csv_name = paired_path.name.removesuffix(paired_suffix) + ".csv"
-                csv_path = paired_path.with_name(csv_name)
             else:
-                csv_path = paired_path.with_suffix(".csv")
+                csv_name = paired_path.with_suffix("").with_suffix(".csv").name
+            csv_path = (
+                output_dir / csv_name
+                if output_dir is not None
+                else paired_path.with_name(csv_name)
+            )
             materialize_msa_csv(
                 paired_path=paired_path,
                 unpaired_path=unpaired_path,
@@ -75,6 +89,7 @@ def parse_yaml(
     ccd: dict[str, Mol],
     mol_dir: Path,
     boltz2: bool = False,
+    msa_materialization_dir: Optional[Path] = None,
 ) -> Target:
     """Parse a Boltz input yaml / json.
 
@@ -127,6 +142,6 @@ def parse_yaml(
     with path.open("r") as file:
         data = yaml.safe_load(file)
 
-    materialize_prepared_msas(path, data)
+    materialize_prepared_msas(path, data, output_dir=msa_materialization_dir)
     name = target_name_from_path(path)
     return parse_boltz_schema(name, data, ccd, mol_dir, boltz2)

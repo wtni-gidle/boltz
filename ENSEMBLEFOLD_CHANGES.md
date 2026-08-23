@@ -29,8 +29,13 @@ searched protein MSA with explicit `msa.paired` and `msa.unpaired` paths. The un
 A3M can be replaced by DeepMSA2 output or its path can be edited in the YAML.
 Inference-only reads `target_data.yaml` directly, derives target id `target` by removing
 the `_data` suffix, verifies the unpaired query, creates the native keyed CSV, refreshes
-processed MSA arrays, and then follows the original inference path. The keyed CSV remains
-a runtime artifact.
+processed MSA arrays, and then follows the original inference path. The keyed CSV and
+all `processed/` files are runtime-only artifacts in a process-private temporary
+directory. They are removed after structure and affinity inference, so the persistent
+job directory contains no `processed/` tree. Concurrent inference processes therefore
+never share preprocessing files. Slurm jobs automatically prefer `SLURM_TMPDIR` when it
+exists; ordinary servers use the platform temporary directory. There is no work-directory
+CLI option.
 
 Prepared MSA paths may point to plain text, gzip, xz, or zstd data. Compression is
 detected from file magic bytes, not the filename: a real zstd stream is decompressed even
