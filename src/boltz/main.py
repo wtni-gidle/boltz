@@ -1,3 +1,5 @@
+import copy
+import gc
 import multiprocessing
 import os
 import pickle
@@ -1555,7 +1557,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         steering_args.physical_guidance_update = use_potentials
 
         model_cls = Boltz2 if model == "boltz2" else Boltz1
-        model_module = model_cls.load_from_checkpoint(
+        pristine_model = model_cls.load_from_checkpoint(
             checkpoint,
             strict=True,
             predict_args=predict_args,
@@ -1567,10 +1569,15 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             msa_args=asdict(msa_args),
             steering_args=asdict(steering_args),
         )
-        model_module.eval()
+        pristine_model.eval()
 
         for current_seed in pending_structure_seeds:
             filtered_manifest = structure_manifests[current_seed]
+            # predict() mutates runtime state on the module. Keep the
+            # checkpoint-backed CPU instance pristine and give each seed an
+            # independent copy so later seeds match standalone invocations.
+            model_module = copy.deepcopy(pristine_model)
+            model_module.eval()
             seed_everything(current_seed)
             msg = (
                 f"Running structure prediction for {len(filtered_manifest.records)} "
@@ -1626,6 +1633,12 @@ def predict(  # noqa: C901, PLR0915, PLR0912
                 datamodule=data_module,
                 return_predictions=False,
             )
+            del data_module, model_module, trainer
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        del pristine_model
 
     # Check if affinity predictions are needed
     if any(r.affinity for r in manifest.records):
@@ -1664,7 +1677,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             steering_args.contact_guidance_update = False
 
             seed_everything(pending_affinity_seeds[0])
-            model_module = Boltz2.load_from_checkpoint(
+            pristine_model = Boltz2.load_from_checkpoint(
                 affinity_checkpoint,
                 strict=True,
                 predict_args=predict_affinity_args,
@@ -1676,10 +1689,12 @@ def predict(  # noqa: C901, PLR0915, PLR0912
                 steering_args=asdict(steering_args),
                 affinity_mw_correction=affinity_mw_correction,
             )
-            model_module.eval()
+            pristine_model.eval()
 
             for current_seed in pending_affinity_seeds:
                 manifest_filtered = affinity_manifests[current_seed]
+                model_module = copy.deepcopy(pristine_model)
+                model_module.eval()
                 seed_everything(current_seed)
                 msg = (
                     f"Running affinity prediction for "
@@ -1723,6 +1738,12 @@ def predict(  # noqa: C901, PLR0915, PLR0912
                     datamodule=data_module,
                     return_predictions=False,
                 )
+                del data_module, model_module, trainer
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+            del pristine_model
         else:
             click.echo("Found existing affinity predictions for all seeds, skipping.")
 
