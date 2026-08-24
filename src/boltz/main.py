@@ -1,4 +1,3 @@
-import copy
 import gc
 import multiprocessing
 import os
@@ -1144,8 +1143,8 @@ def cli() -> None:
     "seed_values",
     type=str,
     help=(
-        "Comma-separated seeds to run in one process. Preprocessing and model "
-        "loading are shared across seeds. Mutually exclusive with --seed."
+        "Comma-separated seeds to run in one process. Preprocessing is shared "
+        "while model instances remain seed-isolated. Mutually exclusive with --seed."
     ),
     default=None,
 )
@@ -1533,9 +1532,6 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         if filtered.records
     ]
     if pending_structure_seeds:
-        # Load the structure checkpoint once, then reset the RNG before every
-        # prediction so each seed matches an equivalent single-seed process.
-        seed_everything(pending_structure_seeds[0])
         if checkpoint is None:
             if model == "boltz2":
                 checkpoint = cache / "boltz2_conf.ckpt"
@@ -1557,26 +1553,24 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         steering_args.physical_guidance_update = use_potentials
 
         model_cls = Boltz2 if model == "boltz2" else Boltz1
-        pristine_model = model_cls.load_from_checkpoint(
-            checkpoint,
-            strict=True,
-            predict_args=predict_args,
-            map_location="cpu",
-            diffusion_process_args=asdict(diffusion_params),
-            ema=False,
-            use_kernels=not no_kernels,
-            pairformer_args=asdict(pairformer_args),
-            msa_args=asdict(msa_args),
-            steering_args=asdict(steering_args),
-        )
-        pristine_model.eval()
-
         for current_seed in pending_structure_seeds:
             filtered_manifest = structure_manifests[current_seed]
-            # predict() mutates runtime state on the module. Keep the
-            # checkpoint-backed CPU instance pristine and give each seed an
-            # independent copy so later seeds match standalone invocations.
-            model_module = copy.deepcopy(pristine_model)
+            # Construct a fresh module for every seed. Boltz keeps runtime
+            # state outside the state_dict, so reusing or deep-copying one
+            # module changes later seeds relative to standalone invocations.
+            seed_everything(current_seed)
+            model_module = model_cls.load_from_checkpoint(
+                checkpoint,
+                strict=True,
+                predict_args=predict_args,
+                map_location="cpu",
+                diffusion_process_args=asdict(diffusion_params),
+                ema=False,
+                use_kernels=not no_kernels,
+                pairformer_args=asdict(pairformer_args),
+                msa_args=asdict(msa_args),
+                steering_args=asdict(steering_args),
+            )
             model_module.eval()
             seed_everything(current_seed)
             msg = (
@@ -1638,8 +1632,6 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        del pristine_model
-
     # Check if affinity predictions are needed
     if any(r.affinity for r in manifest.records):
         click.echo("\nPredicting property: affinity\n")
@@ -1676,24 +1668,21 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             steering_args.physical_guidance_update = False
             steering_args.contact_guidance_update = False
 
-            seed_everything(pending_affinity_seeds[0])
-            pristine_model = Boltz2.load_from_checkpoint(
-                affinity_checkpoint,
-                strict=True,
-                predict_args=predict_affinity_args,
-                map_location="cpu",
-                diffusion_process_args=asdict(diffusion_params),
-                ema=False,
-                pairformer_args=asdict(pairformer_args),
-                msa_args=asdict(msa_args),
-                steering_args=asdict(steering_args),
-                affinity_mw_correction=affinity_mw_correction,
-            )
-            pristine_model.eval()
-
             for current_seed in pending_affinity_seeds:
                 manifest_filtered = affinity_manifests[current_seed]
-                model_module = copy.deepcopy(pristine_model)
+                seed_everything(current_seed)
+                model_module = Boltz2.load_from_checkpoint(
+                    affinity_checkpoint,
+                    strict=True,
+                    predict_args=predict_affinity_args,
+                    map_location="cpu",
+                    diffusion_process_args=asdict(diffusion_params),
+                    ema=False,
+                    pairformer_args=asdict(pairformer_args),
+                    msa_args=asdict(msa_args),
+                    steering_args=asdict(steering_args),
+                    affinity_mw_correction=affinity_mw_correction,
+                )
                 model_module.eval()
                 seed_everything(current_seed)
                 msg = (
@@ -1743,7 +1732,6 @@ def predict(  # noqa: C901, PLR0915, PLR0912
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-            del pristine_model
         else:
             click.echo("Found existing affinity predictions for all seeds, skipping.")
 
