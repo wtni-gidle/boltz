@@ -15,10 +15,12 @@ boltz predict results/target/target_data.yaml --out_dir results -D false -P true
 ```
 
 YAML may contain an optional top-level `name`. It takes precedence over the input
-filename and defines the record ID, job directory, generated `_data.yaml` filename,
-and generated MSA prefix. If omitted, the filename stem remains the fallback for
-backward compatibility. Data-only output persists the resolved name in the generated
-YAML, so renaming that prepared file does not change its target identity.
+filename and defines the record ID, generated `_data.yaml` filename, and generated MSA
+prefix. For the normal single-YAML invocation it also names the job directory. If
+omitted, the filename stem remains the fallback for backward compatibility. Data-only
+output persists the resolved name in the generated YAML, so renaming that prepared file
+does not change its target identity. A directory input remains one multi-record job
+whose outer directory is named after the input directory.
 
 Data-only search writes one paired and one unpaired A3M for every auto-MSA protein
 entity, then writes an executable `target_data.yaml`. It stops before keyed CSV
