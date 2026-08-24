@@ -3,14 +3,14 @@ from typing import Optional
 
 from boltz.data import const
 from boltz.data.msa.mmseqs2 import run_mmseqs2
-from boltz.data.parse.compression import open_maybe_compressed_text
+from boltz.data.parse.compression import open_maybe_compressed_text, write_zstd_text
 
 
 def component_paths(msa_dir: Path, msa_id: str) -> tuple[Path, Path]:
     """Return the prepared paired and unpaired A3M paths for an entity."""
     return (
-        msa_dir / f"{msa_id}_paired.a3m",
-        msa_dir / f"{msa_id}_unpaired.a3m",
+        msa_dir / f"{msa_id}_paired.a3m.zst",
+        msa_dir / f"{msa_id}_unpaired.a3m.zst",
     )
 
 
@@ -71,8 +71,8 @@ def search_msa_components(
 
     for index, msa_id in enumerate(data):
         paired_path, unpaired_path = component_paths(msa_dir, msa_id)
-        paired_path.write_text(paired_msas[index])
-        unpaired_path.write_text(unpaired_msas[index])
+        write_zstd_text(paired_path, paired_msas[index])
+        write_zstd_text(unpaired_path, unpaired_msas[index])
 
 
 def read_a3m_sequences(path: Path) -> list[str]:

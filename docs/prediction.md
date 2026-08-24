@@ -80,7 +80,7 @@ For proteins:
 * To use a precomputed custom MSA, set `msa: MSA_PATH` pointing to a `.a3m` file. If you have more than one protein chain, use a CSV format instead of a3m with two columns: `sequence` (protein sequence) and `key` (a unique identifier for matching rows across chains). Sequences with the same key are mutually aligned.
 * To force single-sequence mode (not recommended, as it reduces accuracy), set `msa: empty`.
 * A generated `*_data.yaml` represents an automatically searched MSA as `msa: {paired: PATH, unpaired: PATH}`. This mapping is a wrapper extension intended as the data-pipeline/inference hand-off. The normal scalar `msa: PATH` form remains supported.
-* Prepared MSA filenames use the first chain ID of each deduplicated protein entry. For example, `id: [A, B]` produces `<name>_A_paired.a3m` and `<name>_A_unpaired.a3m`, which are shared by both chains.
+* Prepared MSA filenames use the first chain ID of each deduplicated protein entry and are written as zstd streams by default. For example, `id: [A, B]` produces `<name>_A_paired.a3m.zst` and `<name>_A_unpaired.a3m.zst`, which are shared by both chains.
 * Prepared A3M paths may contain plain text, gzip, xz, or zstd data. Compression is detected from magic bytes rather than the filename, so both a real compressed `.a3m.zst` and a plain-text file carrying that suffix are handled correctly.
 
 The `modifications` field is optional and allows specification of modified residues in polymers (`protein`, `dna`, or `rna`).  
@@ -193,8 +193,8 @@ results/
 └── target/
     ├── target_data.yaml
     ├── msa/
-    │   ├── target_A_paired.a3m
-    │   └── target_A_unpaired.a3m
+    │   ├── target_A_paired.a3m.zst
+    │   └── target_A_unpaired.a3m.zst
     └── predictions/
         ├── models/seed-[seed]_sample-0_model.cif
         ├── summary_confidences/seed-[seed]_sample-0_summary_confidences.json

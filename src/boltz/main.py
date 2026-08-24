@@ -640,8 +640,7 @@ def write_data_yaml(
         msa_id = msa_id_by_sequence.get(sequence)
         if msa_id is None:
             continue
-        paired_path = out_dir / "msa" / f"{msa_id}_paired.a3m"
-        unpaired_path = out_dir / "msa" / f"{msa_id}_unpaired.a3m"
+        paired_path, unpaired_path = component_paths(out_dir / "msa", msa_id)
         protein["msa"] = {
             "paired": str(paired_path.relative_to(out_dir)),
             "unpaired": str(unpaired_path.relative_to(out_dir)),

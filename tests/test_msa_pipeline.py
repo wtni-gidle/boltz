@@ -98,6 +98,10 @@ def test_search_saves_separate_paired_and_unpaired_a3m(
         paired_path, unpaired_path = component_paths(tmp_path, msa_id)
         assert paired_path.is_file()
         assert unpaired_path.is_file()
+        assert paired_path.name.endswith("_paired.a3m.zst")
+        assert unpaired_path.name.endswith("_unpaired.a3m.zst")
+        assert paired_path.read_bytes().startswith(b"\x28\xb5\x2f\xfd")
+        assert unpaired_path.read_bytes().startswith(b"\x28\xb5\x2f\xfd")
         assert not (tmp_path / f"{msa_id}.csv").exists()
 
 
@@ -155,8 +159,8 @@ def test_monomer_search_writes_empty_paired_file(
     )
 
     paired_path, unpaired_path = component_paths(tmp_path, "target_0")
-    assert paired_path.read_text() == ""
-    assert unpaired_path.read_text().startswith(">q\nAAAA")
+    assert read_a3m_sequences(paired_path) == []
+    assert read_a3m_sequences(unpaired_path) == ["AAAA", "AACC"]
     assert [call[2] for call in calls] == [False]
 
 
@@ -412,8 +416,9 @@ templates:
     def fake_search(*, data, msa_dir, **_kwargs):
         for msa_id in data:
             paired_path, unpaired_path = component_paths(msa_dir, msa_id)
-            paired_path.write_text("")
-            unpaired_path.write_text(">q\nAAAA\n")
+            compressor = zstd.ZstdCompressor()
+            paired_path.write_bytes(compressor.compress(b""))
+            unpaired_path.write_bytes(compressor.compress(b">q\nAAAA\n"))
 
     monkeypatch.setattr(main_module, "search_msa_components", fake_search)
     out_dir = tmp_path / "out"
@@ -432,8 +437,8 @@ templates:
     prepared = yaml.safe_load((out_dir / "target_data.yaml").read_text())
     protein = prepared["sequences"][0]["protein"]
     assert protein["msa"] == {
-        "paired": "msa/target_A_paired.a3m",
-        "unpaired": "msa/target_A_unpaired.a3m",
+        "paired": "msa/target_A_paired.a3m.zst",
+        "unpaired": "msa/target_A_unpaired.a3m.zst",
     }
     assert prepared["name"] == "target"
     assert prepared["templates"] == [{"cif": "template.cif"}]

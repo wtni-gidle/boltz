@@ -28,15 +28,16 @@ creation, preprocessing, checkpoint download, or model inference. Files are name
 
 ```text
 results/<target>/<target>_data.yaml
-results/<target>/msa/<target>_<first-chain>_paired.a3m
-results/<target>/msa/<target>_<first-chain>_unpaired.a3m
+results/<target>/msa/<target>_<first-chain>_paired.a3m.zst
+results/<target>/msa/<target>_<first-chain>_unpaired.a3m.zst
 ```
 
 The generated YAML preserves the original Boltz input and replaces each automatically
 searched protein MSA with explicit `msa.paired` and `msa.unpaired` paths. The unpaired
 A3M can be replaced by DeepMSA2 output or its path can be edited in the YAML.
 For a deduplicated protein entry such as `id: [A, B]`, both chains retain their IDs and
-share files named after the first ID, for example `target_A_unpaired.a3m`.
+share zstd-compressed files named after the first ID, for example
+`target_A_unpaired.a3m.zst`.
 Inference-only reads `target_data.yaml` directly, derives target id `target` by removing
 the `_data` suffix, verifies the unpaired query, creates the native keyed CSV, refreshes
 processed MSA arrays, and then follows the original inference path. The keyed CSV and

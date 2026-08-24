@@ -9,6 +9,13 @@ from typing import TextIO
 import zstandard as zstd
 
 
+def write_zstd_text(path: Path, text: str) -> None:
+    """Write UTF-8 text as a zstd frame."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    compressed = zstd.ZstdCompressor().compress(text.encode("utf-8"))
+    path.write_bytes(compressed)
+
+
 @contextmanager
 def open_maybe_compressed_text(path: Path) -> Iterator[TextIO]:
     """Open plain, gzip, xz, or zstd text based on content magic bytes."""
