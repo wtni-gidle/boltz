@@ -39,11 +39,10 @@ CLI option.
 
 `--seed` remains the single-seed interface. `--seeds 40,41,42,43,44` runs several
 seeds in one process and is mutually exclusive with `--seed`. The prepared YAML is
-preprocessed once, but a fresh structure/affinity model instance is constructed from
-the local checkpoint for each seed. This isolation is required for exact equivalence
-with standalone seed invocations because prediction mutates Boltz runtime state that
-is not fully represented by the model state dict. RNG state is reset before model
-construction and prediction. Skip checks and output names remain seed-specific.
+preprocessed once, the structure checkpoint is loaded once for all requested seeds,
+and the affinity checkpoint is likewise loaded at most once. RNG state is reset before
+every structure and affinity prediction so each seed follows the same path as an
+equivalent single-seed invocation. Skip checks and output names remain seed-specific.
 
 Prepared MSA paths may point to plain text, gzip, xz, or zstd data. Compression is
 detected from file magic bytes, not the filename: a real zstd stream is decompressed even
