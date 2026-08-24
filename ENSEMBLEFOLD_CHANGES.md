@@ -41,8 +41,10 @@ CLI option.
 seeds in one process and is mutually exclusive with `--seed`. The prepared YAML is
 preprocessed once, the structure checkpoint is loaded once for all requested seeds,
 and the affinity checkpoint is likewise loaded at most once. RNG state is reset before
-every structure and affinity prediction so each seed follows the same path as an
-equivalent single-seed invocation. Skip checks and output names remain seed-specific.
+every structure and affinity prediction. Skip checks and output names remain
+seed-specific. Because all seeds share one GPU process and model instance, outputs are
+not guaranteed to be bitwise or coordinate-identical to separate single-seed processes;
+use independent `--seed` invocations when strict cross-process reproducibility matters.
 
 Prepared MSA paths may point to plain text, gzip, xz, or zstd data. Compression is
 detected from file magic bytes, not the filename: a real zstd stream is decompressed even
