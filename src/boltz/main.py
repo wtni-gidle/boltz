@@ -621,6 +621,10 @@ def write_data_yaml(
     with source_path.open() as handle:
         prepared_schema = yaml.safe_load(handle)
 
+    # Persist the resolved job name so the prepared YAML remains stable even
+    # if it is renamed before an inference-only run.
+    prepared_schema["name"] = target.record.id
+
     msa_id_by_sequence = {
         sequence: msa_id for msa_id, sequence in auto_msas.items()
     }
@@ -1344,9 +1348,9 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         else:
             click.echo("MSA server authentication: no credentials provided")
 
-    # Create one AF3-style job directory below the requested output root. A
-    # generated ``*_data.yaml`` deliberately maps back to the original target
-    # name so data-only and inference-only runs share the same directory.
+    # Create one AF3-style job directory below the requested output root. The
+    # top-level YAML ``name`` takes precedence over the filename; generated
+    # ``*_data.yaml`` inputs persist that name so both stages share a directory.
     data = Path(data).expanduser()
     out_dir = Path(out_dir).expanduser() / target_name_from_path(data)
     out_dir.mkdir(parents=True, exist_ok=True)

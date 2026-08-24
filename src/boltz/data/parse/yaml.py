@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 import yaml
 from rdkit.Chem.rdchem import Mol
@@ -9,12 +9,47 @@ from boltz.data.parse.schema import parse_boltz_schema
 from boltz.data.types import Target
 
 
-def target_name_from_path(path: Path) -> str:
-    """Return the target name encoded by a Boltz YAML filename."""
+def _fallback_target_name(path: Path) -> str:
+    """Return the target name encoded by a Boltz input filename."""
     name = path.stem
     if path.suffix.lower() in (".yml", ".yaml") and name.endswith("_data"):
         return name.removesuffix("_data")
     return name
+
+
+def target_name_from_schema(path: Path, schema: Mapping) -> str:
+    """Return and validate the target name from a parsed Boltz YAML schema."""
+    name = schema.get("name", _fallback_target_name(path))
+    if not isinstance(name, str) or not name.strip():
+        msg = "Top-level YAML 'name' must be a non-empty string."
+        raise ValueError(msg)
+
+    name = name.strip()
+    invalid_chars = ("/", "\\", "\0", "\n", "\r")
+    if name in {".", ".."} or any(char in name for char in invalid_chars):
+        msg = (
+            "Top-level YAML 'name' must be a single safe filename component "
+            f"without path separators, got {name!r}."
+        )
+        raise ValueError(msg)
+    return name
+
+
+def target_name_from_path(path: Path) -> str:
+    """Return the YAML ``name`` or fall back to the input filename.
+
+    Prepared ``*_data.yaml`` inputs without a name retain the historical
+    mapping back to the filename without the ``_data`` suffix.
+    """
+    if path.is_file() and path.suffix.lower() in (".yml", ".yaml"):
+        with path.open("r") as file:
+            schema = yaml.safe_load(file)
+        if not isinstance(schema, Mapping):
+            schema_type = type(schema).__name__
+            msg = f"Boltz YAML input must contain a mapping, got {schema_type}."
+            raise ValueError(msg)
+        return target_name_from_schema(path, schema)
+    return _fallback_target_name(path)
 
 
 def _resolve_path(path: str, input_dir: Path) -> Path:
@@ -95,6 +130,7 @@ def parse_yaml(
 
     The input file should be a yaml file with the following format:
 
+    name: example_target
     sequences:
         - protein:
             id: A
@@ -142,6 +178,11 @@ def parse_yaml(
     with path.open("r") as file:
         data = yaml.safe_load(file)
 
+    if not isinstance(data, Mapping):
+        data_type = type(data).__name__
+        msg = f"Boltz YAML input must contain a mapping, got {data_type}."
+        raise ValueError(msg)
+
     materialize_prepared_msas(path, data, output_dir=msa_materialization_dir)
-    name = target_name_from_path(path)
+    name = target_name_from_schema(path, data)
     return parse_boltz_schema(name, data, ccd, mol_dir, boltz2)

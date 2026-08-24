@@ -8,7 +8,8 @@ Once `boltz` is installed, you can run predictions with:
 * If you include `--use_msa_server`, the MSA will be generated automatically via the mmseqs2 server. Without this flag, you must provide a pre-computed MSA.
 * If you include `--use_potentials`, Boltz will apply inference-time potentials to improve the physical plausibility of the predicted poses.
 * By default, Boltz runs structure and affinity prediction even if matching output files already exist. Add `--skip` to skip a seed only when all required model, summary confidence, and pLDDT files are present. The check does not validate the MSA, templates, constraints, checkpoint, or inference parameters, so use a separate output directory for different experimental conditions.
-* `-D true -P false` runs only the MSA data pipeline and writes `<out_dir>/<target>/<target>_data.yaml` plus separate paired/unpaired A3M files. `-D false -P true` accepts that generated YAML directly, creates the native keyed CSV at runtime, and runs preprocessing and inference. At least one stage must be enabled.
+* The optional top-level YAML `name` defines the target/record ID, job directory, generated `_data.yaml` filename, and MSA prefix. If omitted, the input filename stem is used for backward compatibility. A name must be a non-empty, single filename component.
+* `-D true -P false` runs only the MSA data pipeline and writes `<out_dir>/<name>/<name>_data.yaml` plus separate paired/unpaired A3M files. `-D false -P true` accepts that generated YAML directly, creates the native keyed CSV at runtime, and runs preprocessing and inference. At least one stage must be enabled.
 * `--seeds 42` runs one seed, while `--seeds 40,41,42` runs several seeds sequentially in one process while sharing preprocessing and checkpoint loading. When omitted, one concrete seed is generated and printed.
 
 
@@ -18,6 +19,7 @@ Boltz takes inputs in `.yaml` format, which specifies the components of the comp
 Below is the full schema (each section is described in detail afterward):
 
 ```yaml
+name: TARGET_NAME
 sequences:
     - ENTITY_TYPE:
         id: CHAIN_ID 
@@ -111,6 +113,7 @@ For any template you provide, you can also specify a `force` flag which will use
 ### Example
 
 ```yaml
+name: example_complex
 version: 1
 sequences:
   - protein:

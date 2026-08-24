@@ -251,6 +251,44 @@ def test_data_only_cli_stops_after_preparing_msas(
     assert "No seed provided" not in result.output
 
 
+def test_data_only_cli_uses_top_level_name_for_job_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_path = tmp_path / "input_filename.yaml"
+    input_path.write_text("name: yaml_job_name\nsequences: []\n")
+    calls = []
+    monkeypatch.setattr(
+        main_module,
+        "download_boltz2",
+        lambda _cache, *, download_weights: None,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "prepare_msa_inputs",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    result = CliRunner().invoke(
+        main_module.cli,
+        [
+            "predict",
+            str(input_path),
+            "--out_dir",
+            str(tmp_path / "out"),
+            "--cache",
+            str(tmp_path / "cache"),
+            "-D",
+            "true",
+            "-P",
+            "false",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["out_dir"] == tmp_path / "out" / "yaml_job_name"
+
+
 @pytest.mark.parametrize("use_slurm_tmp", [False, True])
 def test_inference_only_uses_and_cleans_private_processed_directory(
     tmp_path: Path,
@@ -363,6 +401,7 @@ templates:
         "paired": "msa/target_0_paired.a3m",
         "unpaired": "msa/target_0_unpaired.a3m",
     }
+    assert prepared["name"] == "target"
     assert prepared["templates"] == [{"cif": "template.cif"}]
     assert not (out_dir / "prepared_msa_manifest.json").exists()
     assert not (out_dir / "msa" / "target_0.csv").exists()
@@ -475,6 +514,36 @@ sequences:
     assert parsed["schema"]["sequences"][0]["protein"]["msa"] == str(
         msa_dir / "target_0.csv"
     )
+
+
+def test_parse_yaml_uses_top_level_name_instead_of_filename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_path = tmp_path / "renamed.yaml"
+    data_path.write_text("name: stable_name\nsequences: []\n")
+    parsed = {}
+
+    def fake_parse(name, schema, *_args, **_kwargs):
+        parsed["name"] = name
+        parsed["schema"] = schema
+        return SimpleNamespace()
+
+    monkeypatch.setattr(yaml_parser, "parse_boltz_schema", fake_parse)
+
+    yaml_parser.parse_yaml(data_path, {}, tmp_path, boltz2=True)
+
+    assert parsed["name"] == "stable_name"
+    assert target_name_from_path(data_path) == "stable_name"
+
+
+@pytest.mark.parametrize("name", ["", "../escape", "nested/job", "nested\\job"])
+def test_yaml_rejects_unsafe_top_level_name(tmp_path: Path, name: str) -> None:
+    data_path = tmp_path / "input.yaml"
+    data_path.write_text(yaml.safe_dump({"name": name, "sequences": []}))
+
+    with pytest.raises(ValueError, match="name"):
+        target_name_from_path(data_path)
 
 
 def test_cli_rejects_disabling_both_stages(tmp_path: Path) -> None:
