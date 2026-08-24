@@ -1,177 +1,152 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# Exit immediately if a command fails.
+set -e
 
-set -euo pipefail
+# Allowed values: "current", "delta"
+# current: use the boltz command from the environment that is already active.
+# delta:   use the Boltz environment installed during the Delta tests.
+server="current"
+
+echo "Server: $server"
 
 usage() {
-    cat <<'EOF'
-Run the EnsembleFold Boltz wrapper.
-
-Usage:
-  run_boltz.sh -i INPUT -o OUTPUT [options] [-- extra boltz options]
-
-Required:
-  -i PATH   Input YAML/FASTA file or input directory.
-  -o PATH   Output collection root.
-
-Common options:
-  -d IDS    CUDA device IDs, for example 0 or 0,1.                 [0]
-  -D BOOL   Run the data pipeline.                                [true]
-  -P BOOL   Run model inference.                                  [true]
-  -r LIST   One seed or comma-separated seeds, for example 1,2,3.
-  -n INT    Number of diffusion samples.                          [1]
-  -c INT    Number of recycling steps.                            [3]
-  -p INT    Number of diffusion sampling steps.                   [200]
-  -m INT    Maximum samples evaluated in parallel.                [5]
-  -a NAME   Accelerator: gpu, cpu, or tpu.                        [gpu]
-  -C PATH   Boltz cache directory. Defaults to BOLTZ_CACHE/Boltz.
-  -M BOOL   Use the MSA server for missing protein MSAs.           [true]
-  -S BOOL   Skip seeds whose required outputs already exist.      [false]
-  -h        Show this help.
-
-Environment:
-  BOLTZ_ENV_ACTIVATE  Optional path to a venv/conda activate script.
-  BOLTZ_BIN           Optional path to the boltz executable.
-  BOLTZ_CACHE         Standard Boltz cache override.
-
-Examples:
-  # Data only: writes <name>_data.yaml and *.a3m.zst.
-  run_boltz.sh -i seq.yaml -o result -D true -P false
-
-  # Inference only: five seeds and five samples per seed.
-  run_boltz.sh -i result/seq/seq_data.yaml -o result \
-    -D false -P true -r 1,2,3,4,5 -n 5 -S true
-
-  # Pass less common native options after --.
-  run_boltz.sh -i seq.yaml -o result -- --no_kernels --write_full_pae
-EOF
-}
-
-die() {
-    echo "Error: $*" >&2
+    echo ""
+    echo "Please make sure all required parameters are given"
+    echo "Usage: $0 <OPTIONS>"
+    echo "Required Parameters:"
+    echo "-i <input_path>                 Input YAML/FASTA file or a directory of inputs."
+    echo "-o <output_dir>                 Directory in which results will be saved."
+    echo "Optional Parameters:"
+    echo "-d <gpu_device>                 CUDA device IDs, for example 0 or 0,1. (default: 0)"
+    echo "-D <run_data_pipeline>          Run the data pipeline. (default: true)"
+    echo "-P <run_inference>              Run model inference. (default: true)"
+    echo "-r <model_seeds>                One seed or comma-separated seeds, e.g. 1,2,3."
+    echo "-n <diffusion_samples>          Number of samples per seed. (default: 1)"
+    echo "-c <recycling_steps>            Number of recycling steps. (default: 3)"
+    echo "-p <sampling_steps>             Number of diffusion sampling steps. (default: 200)"
+    echo "-m <max_parallel_samples>       Samples evaluated in parallel. (default: 5)"
+    echo "-M <use_msa_server>             Search missing protein MSAs remotely. (default: true)"
+    echo "-S <skip>                       Skip seeds whose expected outputs exist. (default: false)"
+    echo "-h                              Show this help."
+    echo ""
+    echo "Examples:"
+    echo "  # Run only the data pipeline."
+    echo "  $0 -i seq.yaml -o result -D true -P false"
+    echo ""
+    echo "  # Read seq_data.yaml and predict five seeds."
+    echo "  $0 -i result/seq/seq_data.yaml -o result -D false -P true -r 1,2,3,4,5 -n 5 -S true"
     exit 1
 }
 
-normalize_bool() {
-    case "$2" in
-        [Tt][Rr][Uu][Ee]) printf 'true' ;;
-        [Ff][Aa][Ll][Ss][Ee]) printf 'false' ;;
-        *) die "$1 must be true or false, got: $2" ;;
-    esac
-}
-
-input_path=""
-output_dir=""
-gpu_devices="0"
-run_data_pipeline="true"
-run_inference="true"
-seeds=""
-diffusion_samples="1"
-recycling_steps="3"
-sampling_steps="200"
-max_parallel_samples="5"
-accelerator="gpu"
-cache_dir="${BOLTZ_CACHE:-}"
-use_msa_server="true"
-skip="false"
-
-while getopts ":i:o:d:D:P:r:n:c:p:m:a:C:M:S:h" opt; do
-    case "$opt" in
-        i) input_path="$OPTARG" ;;
-        o) output_dir="$OPTARG" ;;
-        d) gpu_devices="$OPTARG" ;;
-        D) run_data_pipeline="$OPTARG" ;;
-        P) run_inference="$OPTARG" ;;
-        r) seeds="$OPTARG" ;;
-        n) diffusion_samples="$OPTARG" ;;
-        c) recycling_steps="$OPTARG" ;;
-        p) sampling_steps="$OPTARG" ;;
-        m) max_parallel_samples="$OPTARG" ;;
-        a) accelerator="$OPTARG" ;;
-        C) cache_dir="$OPTARG" ;;
-        M) use_msa_server="$OPTARG" ;;
-        S) skip="$OPTARG" ;;
-        h) usage; exit 0 ;;
-        :) die "Option -$OPTARG requires a value." ;;
-        \?) die "Unknown option: -$OPTARG" ;;
+# region: Parse command line arguments
+while getopts "i:o:d:D:P:r:n:c:p:m:M:S:h" opt; do
+    case "${opt}" in
+    i) input_path=$OPTARG ;;
+    o) output_dir=$OPTARG ;;
+    d) gpu_device=$OPTARG ;;
+    D) run_data_pipeline=$OPTARG ;;
+    P) run_inference=$OPTARG ;;
+    r) model_seeds=$OPTARG ;;
+    n) diffusion_samples=$OPTARG ;;
+    c) recycling_steps=$OPTARG ;;
+    p) sampling_steps=$OPTARG ;;
+    m) max_parallel_samples=$OPTARG ;;
+    M) use_msa_server=$OPTARG ;;
+    S) skip=$OPTARG ;;
+    h) usage ;;
+    *) usage ;;
     esac
 done
-shift $((OPTIND - 1))
-if [[ "${1:-}" == "--" ]]; then
-    shift
+# endregion
+
+# region: Check required parameters
+if [[ "$input_path" == "" || "$output_dir" == "" ]]; then
+    usage
 fi
 
-[[ -n "$input_path" ]] || { usage >&2; die "-i is required."; }
-[[ -n "$output_dir" ]] || { usage >&2; die "-o is required."; }
-[[ -e "$input_path" ]] || die "Input does not exist: $input_path"
-run_data_pipeline="$(normalize_bool "-D" "$run_data_pipeline")"
-run_inference="$(normalize_bool "-P" "$run_inference")"
-use_msa_server="$(normalize_bool "-M" "$use_msa_server")"
-skip="$(normalize_bool "-S" "$skip")"
+if [[ ! -e "$input_path" ]]; then
+    echo "Error: input path does not exist: $input_path"
+    exit 1
+fi
+# endregion
+
+# region: Set default values
+if [[ "$gpu_device" == "" ]]; then gpu_device="0"; fi
+if [[ "$run_data_pipeline" == "" ]]; then run_data_pipeline="true"; fi
+if [[ "$run_inference" == "" ]]; then run_inference="true"; fi
+if [[ "$diffusion_samples" == "" ]]; then diffusion_samples="1"; fi
+if [[ "$recycling_steps" == "" ]]; then recycling_steps="3"; fi
+if [[ "$sampling_steps" == "" ]]; then sampling_steps="200"; fi
+if [[ "$max_parallel_samples" == "" ]]; then max_parallel_samples="5"; fi
+if [[ "$use_msa_server" == "" ]]; then use_msa_server="true"; fi
+if [[ "$skip" == "" ]]; then skip="false"; fi
+
 if [[ "$run_data_pipeline" == "false" && "$run_inference" == "false" ]]; then
-    die "At least one of -D or -P must be true."
+    echo "Error: run_data_pipeline and run_inference cannot both be false."
+    exit 1
 fi
-case "$accelerator" in
-    gpu|cpu|tpu) ;;
-    *) die "-a must be gpu, cpu, or tpu, got: $accelerator" ;;
-esac
+# endregion
 
-if [[ -n "${BOLTZ_ENV_ACTIVATE:-}" ]]; then
-    [[ -f "$BOLTZ_ENV_ACTIVATE" ]] || die "Activation script not found: $BOLTZ_ENV_ACTIVATE"
-    # shellcheck disable=SC1090
-    source "$BOLTZ_ENV_ACTIVATE"
+# region: Set paths and activate the environment for each server
+if [[ "$server" == "current" ]]; then
+    # Activate your environment before running this script.
+    boltz_bin="boltz"
+    cache_dir=""
+
+elif [[ "$server" == "delta" ]]; then
+    env_path=/work/hdd/bbgs/nwentao/boltz2_wrapper_test/venv/bin/activate
+    boltz_bin=/work/hdd/bbgs/nwentao/boltz2_wrapper_test/venv/bin/boltz
+    cache_dir=/work/hdd/bbgs/nwentao/boltz2_wrapper_test/cache/boltz
+
+    source "$env_path"
+else
+    echo "Error: server is invalid: $server"
+    exit 1
+fi
+# endregion
+
+if ! command -v "$boltz_bin" >/dev/null 2>&1; then
+    echo "Error: Boltz executable does not exist: $boltz_bin"
+    exit 1
 fi
 
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-boltz_bin="${BOLTZ_BIN:-}"
-if [[ -z "$boltz_bin" ]]; then
-    for candidate in "$script_dir/.venv/bin/boltz" "$script_dir/venv/bin/boltz"; do
-        if [[ -x "$candidate" ]]; then
-            boltz_bin="$candidate"
-            break
-        fi
-    done
+if [[ "$run_inference" == "true" ]]; then
+    export CUDA_VISIBLE_DEVICES="$gpu_device"
+    IFS=',' read -r -a gpu_device_list <<< "$gpu_device"
+    devices=${#gpu_device_list[@]}
+else
+    devices=1
 fi
-if [[ -z "$boltz_bin" ]]; then
-    boltz_bin="$(command -v boltz || true)"
-fi
-[[ -n "$boltz_bin" && -x "$boltz_bin" ]] || die \
-    "boltz executable not found; activate its environment or set BOLTZ_BIN."
 
-cmd=(
-    "$boltz_bin" predict "$input_path"
+#### Command arguments
+command_args=(
+    predict "$input_path"
     --out_dir "$output_dir"
-    -D "$run_data_pipeline"
-    -P "$run_inference"
-    --accelerator "$accelerator"
+    --run_data_pipeline "$run_data_pipeline"
+    --run_inference "$run_inference"
+    --devices "$devices"
     --recycling_steps "$recycling_steps"
     --sampling_steps "$sampling_steps"
     --diffusion_samples "$diffusion_samples"
     --max_parallel_samples "$max_parallel_samples"
 )
 
-if [[ -n "$cache_dir" ]]; then
-    cmd+=(--cache "$cache_dir")
+if [[ "$cache_dir" != "" ]]; then
+    command_args+=(--cache "$cache_dir")
 fi
-if [[ -n "$seeds" ]]; then
-    cmd+=(--seeds "$seeds")
+
+if [[ "$model_seeds" != "" ]]; then
+    command_args+=(--seeds "$model_seeds")
 fi
+
 if [[ "$use_msa_server" == "true" ]]; then
-    cmd+=(--use_msa_server)
+    command_args+=(--use_msa_server)
 fi
+
 if [[ "$skip" == "true" ]]; then
-    cmd+=(--skip)
+    command_args+=(--skip)
 fi
 
-if [[ "$run_inference" == "true" && "$accelerator" == "gpu" ]]; then
-    export CUDA_VISIBLE_DEVICES="$gpu_devices"
-    IFS=',' read -r -a visible_gpu_ids <<< "$gpu_devices"
-    cmd+=(--devices "${#visible_gpu_ids[@]}")
-fi
-if [[ "$#" -gt 0 ]]; then
-    cmd+=("$@")
-fi
-
-echo "Boltz command:"
-printf ' %q' "${cmd[@]}"
-printf '\n'
-"${cmd[@]}"
+# Run Boltz with the requested parameters.
+echo "$boltz_bin ${command_args[*]}"
+"$boltz_bin" "${command_args[@]}"

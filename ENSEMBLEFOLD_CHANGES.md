@@ -7,10 +7,13 @@ are unchanged.
 
 ## Two-stage MSA pipeline
 
-The repository root includes `run_boltz.sh`, a portable Bash entry point for
-data-only, inference-only, multi-seed, and resume runs. It uses the active `boltz`
-installation by default, supports `BOLTZ_ENV_ACTIVATE` / `BOLTZ_BIN` overrides, and
-forwards arguments following `--` to the native CLI.
+The repository root includes `run_boltz.sh`, a Bash entry point for data-only,
+inference-only, multi-seed, and resume runs. Its layout follows
+`run_alphafold_pro.sh`: select `server` near the top, parse the documented short
+options, set defaults, activate the selected environment, print the full native
+command, and run it. `server="current"` uses the already active environment;
+`server="delta"` contains the paths used by the Delta test installation. Add another
+explicit server branch when deploying elsewhere.
 
 `boltz predict` accepts two boolean stage controls:
 
