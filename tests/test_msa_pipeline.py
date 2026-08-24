@@ -101,6 +101,40 @@ def test_search_saves_separate_paired_and_unpaired_a3m(
         assert not (tmp_path / f"{msa_id}.csv").exists()
 
 
+def test_collect_auto_msas_uses_first_chain_name_for_each_entity(
+    tmp_path: Path,
+) -> None:
+    prot_id = main_module.const.chain_type_ids["PROTEIN"]
+    chains = [
+        SimpleNamespace(
+            chain_name="A", entity_id=0, mol_type=prot_id, msa_id=0
+        ),
+        SimpleNamespace(
+            chain_name="B", entity_id=0, mol_type=prot_id, msa_id=0
+        ),
+        SimpleNamespace(
+            chain_name="D", entity_id=1, mol_type=prot_id, msa_id=0
+        ),
+        SimpleNamespace(
+            chain_name="E", entity_id=1, mol_type=prot_id, msa_id=0
+        ),
+    ]
+    target = SimpleNamespace(
+        record=SimpleNamespace(id="target", chains=chains),
+        sequences={0: "AAAA", 1: "BBBB"},
+    )
+
+    auto_msas = main_module.collect_auto_msas(target, tmp_path)
+
+    assert auto_msas == {"target_A": "AAAA", "target_D": "BBBB"}
+    assert [chain.msa_id for chain in chains] == [
+        tmp_path / "target_A.csv",
+        tmp_path / "target_A.csv",
+        tmp_path / "target_D.csv",
+        tmp_path / "target_D.csv",
+    ]
+
+
 def test_monomer_search_writes_empty_paired_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -372,7 +406,7 @@ templates:
     monkeypatch.setattr(
         main_module,
         "collect_auto_msas",
-        lambda *_args, **_kwargs: {"target_0": "AAAA"},
+        lambda *_args, **_kwargs: {"target_A": "AAAA"},
     )
 
     def fake_search(*, data, msa_dir, **_kwargs):
@@ -398,13 +432,13 @@ templates:
     prepared = yaml.safe_load((out_dir / "target_data.yaml").read_text())
     protein = prepared["sequences"][0]["protein"]
     assert protein["msa"] == {
-        "paired": "msa/target_0_paired.a3m",
-        "unpaired": "msa/target_0_unpaired.a3m",
+        "paired": "msa/target_A_paired.a3m",
+        "unpaired": "msa/target_A_unpaired.a3m",
     }
     assert prepared["name"] == "target"
     assert prepared["templates"] == [{"cif": "template.cif"}]
     assert not (out_dir / "prepared_msa_manifest.json").exists()
-    assert not (out_dir / "msa" / "target_0.csv").exists()
+    assert not (out_dir / "msa" / "target_A.csv").exists()
 
 
 def test_prepared_yaml_materializes_relative_msa_paths(tmp_path: Path) -> None:

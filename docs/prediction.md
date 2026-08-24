@@ -80,6 +80,7 @@ For proteins:
 * To use a precomputed custom MSA, set `msa: MSA_PATH` pointing to a `.a3m` file. If you have more than one protein chain, use a CSV format instead of a3m with two columns: `sequence` (protein sequence) and `key` (a unique identifier for matching rows across chains). Sequences with the same key are mutually aligned.
 * To force single-sequence mode (not recommended, as it reduces accuracy), set `msa: empty`.
 * A generated `*_data.yaml` represents an automatically searched MSA as `msa: {paired: PATH, unpaired: PATH}`. This mapping is a wrapper extension intended as the data-pipeline/inference hand-off. The normal scalar `msa: PATH` form remains supported.
+* Prepared MSA filenames use the first chain ID of each deduplicated protein entry. For example, `id: [A, B]` produces `<name>_A_paired.a3m` and `<name>_A_unpaired.a3m`, which are shared by both chains.
 * Prepared A3M paths may contain plain text, gzip, xz, or zstd data. Compression is detected from magic bytes rather than the filename, so both a real compressed `.a3m.zst` and a plain-text file carrying that suffix are handled correctly.
 
 The `modifications` field is optional and allows specification of modified residues in polymers (`protein`, `dna`, or `rna`).  
@@ -192,8 +193,8 @@ results/
 └── target/
     ├── target_data.yaml
     ├── msa/
-    │   ├── target_0_paired.a3m
-    │   └── target_0_unpaired.a3m
+    │   ├── target_A_paired.a3m
+    │   └── target_A_unpaired.a3m
     └── predictions/
         ├── models/seed-[seed]_sample-0_model.cif
         ├── summary_confidences/seed-[seed]_sample-0_summary_confidences.json
@@ -204,7 +205,7 @@ results/
         └── affinity/seed-[seed]_affinity.json
 ```
 
-Inference-only creates the keyed CSV, `processed/` data, manifest, and Lightning working files in a process-private temporary directory and removes them after prediction. It therefore does **not** persist `target_0.csv`, `processed/`, or `lightning_logs/` below `results/target/`. A combined `-D true -P true` run retains the native persistent preprocessing behavior and may include those paths.
+Inference-only creates the keyed CSV, `processed/` data, manifest, and Lightning working files in a process-private temporary directory and removes them after prediction. It therefore does **not** persist `target_A.csv`, `processed/`, or `lightning_logs/` below `results/target/`. A combined `-D true -P true` run retains the native persistent preprocessing behavior and may include those paths.
 
 For the normal one-target job, prediction categories are written directly below `predictions/`. Legacy multi-record invocations retain a `<record.id>/` subdirectory to prevent filename collisions. Samples retain their original diffusion sample index; they are not renamed by confidence rank. Confidence scores remain available in the summary JSON. With `--seeds`, every seed uses the same layout and filename pattern; requested seeds are run sequentially, and `--skip` evaluates completeness independently for each seed.
 

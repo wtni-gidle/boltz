@@ -593,13 +593,17 @@ def parse_input_target(
 
 
 def collect_auto_msas(target: Target, msa_dir: Path) -> dict[str, str]:
-    """Assign runtime CSV paths and collect auto-MSA protein entities."""
+    """Collect auto-MSAs, naming each entity after its first protein chain."""
     to_generate: dict[str, str] = {}
+    msa_id_by_entity: dict[int, str] = {}
     prot_id = const.chain_type_ids["PROTEIN"]
     for chain in target.record.chains:
         if (chain.mol_type == prot_id) and (chain.msa_id == 0):
             entity_id = chain.entity_id
-            msa_id = f"{target.record.id}_{entity_id}"
+            msa_id = msa_id_by_entity.setdefault(
+                entity_id,
+                f"{target.record.id}_{chain.chain_name}",
+            )
             to_generate[msa_id] = target.sequences[entity_id]
             chain.msa_id = msa_dir / f"{msa_id}.csv"
         elif chain.msa_id == 0:
