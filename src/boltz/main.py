@@ -1525,7 +1525,6 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         use_paired_feature=model == "boltz2",
     )
 
-    trainer: Optional[Trainer] = None
     pending_structure_seeds = [
         current_seed
         for current_seed, filtered in structure_manifests.items()
@@ -1589,17 +1588,17 @@ def predict(  # noqa: C901, PLR0915, PLR0912
                 seed=current_seed,
                 use_record_subdir=use_record_subdir,
             )
-            if trainer is None:
-                trainer = Trainer(
-                    default_root_dir=processing_out_dir,
-                    strategy=strategy,
-                    callbacks=[pred_writer],
-                    accelerator=accelerator,
-                    devices=devices,
-                    precision=32 if model == "boltz1" else "bf16-mixed",
-                )
-            else:
-                trainer.callbacks[0] = pred_writer
+            # Lightning keeps prediction-loop state on a Trainer after a run.
+            # Use a fresh lightweight Trainer for each seed while continuing
+            # to share the already-loaded model checkpoint.
+            trainer = Trainer(
+                default_root_dir=processing_out_dir,
+                strategy=strategy,
+                callbacks=[pred_writer],
+                accelerator=accelerator,
+                devices=devices,
+                precision=32 if model == "boltz1" else "bf16-mixed",
+            )
 
             if model == "boltz2":
                 data_module = Boltz2InferenceDataModule(
@@ -1696,17 +1695,14 @@ def predict(  # noqa: C901, PLR0915, PLR0912
                     seed=current_seed,
                     use_record_subdir=use_record_subdir,
                 )
-                if trainer is None:
-                    trainer = Trainer(
-                        default_root_dir=processing_out_dir,
-                        strategy=strategy,
-                        callbacks=[pred_writer],
-                        accelerator=accelerator,
-                        devices=devices,
-                        precision="bf16-mixed",
-                    )
-                else:
-                    trainer.callbacks[0] = pred_writer
+                trainer = Trainer(
+                    default_root_dir=processing_out_dir,
+                    strategy=strategy,
+                    callbacks=[pred_writer],
+                    accelerator=accelerator,
+                    devices=devices,
+                    precision="bf16-mixed",
+                )
 
                 data_module = Boltz2InferenceDataModule(
                     manifest=manifest_filtered,
