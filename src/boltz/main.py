@@ -67,6 +67,40 @@ class BoltzProcessedInput:
     extra_mols_dir: Optional[Path] = None
 
 
+def resolve_prediction_seeds(
+    seed: Optional[int],
+    seed_values: Optional[str],
+) -> list[int]:
+    """Resolve the single- or multi-seed CLI options."""
+    if seed is not None and seed_values is not None:
+        msg = "--seed and --seeds are mutually exclusive."
+        raise click.UsageError(msg)
+
+    if seed_values is None:
+        if seed is None:
+            seed = secrets.randbits(32)
+            click.echo(f"No seed provided; using generated seed {seed}.")
+        resolved = [seed]
+    else:
+        raw_values = [value.strip() for value in seed_values.split(",")]
+        if not raw_values or any(not value for value in raw_values):
+            msg = "--seeds must be a comma-separated list of integers."
+            raise click.BadParameter(msg, param_hint="--seeds")
+        try:
+            resolved = [int(value) for value in raw_values]
+        except ValueError as exc:
+            msg = "--seeds must be a comma-separated list of integers."
+            raise click.BadParameter(msg, param_hint="--seeds") from exc
+
+    if any(value < 0 or value >= 2**32 for value in resolved):
+        msg = "Seeds must be between 0 and 4294967295 inclusive."
+        raise click.BadParameter(msg, param_hint="--seed/--seeds")
+    if len(resolved) != len(set(resolved)):
+        msg = "--seeds must not contain duplicate values."
+        raise click.BadParameter(msg, param_hint="--seeds")
+    return resolved
+
+
 @dataclass
 class PairformerArgs:
     """Pairformer arguments."""
@@ -1104,6 +1138,16 @@ def cli() -> None:
     default=None,
 )
 @click.option(
+    "--seeds",
+    "seed_values",
+    type=str,
+    help=(
+        "Comma-separated seeds to run in one process. Preprocessing and model "
+        "loading are shared across seeds. Mutually exclusive with --seed."
+    ),
+    default=None,
+)
+@click.option(
     "--use_msa_server",
     is_flag=True,
     help="Whether to use the MMSeqs2 server for MSA generation. Default is False.",
@@ -1244,6 +1288,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     num_workers: int = 2,
     skip: bool = False,
     seed: Optional[int] = None,
+    seed_values: Optional[str] = None,
     use_msa_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
     msa_pairing_strategy: str = "greedy",
@@ -1270,6 +1315,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     # Set rdkit pickle logic
     Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 
+    prediction_seeds: list[int] = []
     if run_inference:
         # If cpu, write a friendly warning
         if accelerator == "cpu":
@@ -1287,12 +1333,8 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         # Ignore matmul precision warning
         torch.set_float32_matmul_precision("highest")
 
-        # Resolve an omitted seed to a concrete value so output names and skip
-        # checks never collapse independent random runs into "seed-None".
-        if seed is None:
-            seed = secrets.randbits(32)
-            click.echo(f"No seed provided; using generated seed {seed}.")
-        seed_everything(seed)
+        prediction_seeds = resolve_prediction_seeds(seed, seed_values)
+        seed_everything(prediction_seeds[0])
 
         for key in ["CUEQ_DEFAULT_CONFIG", "CUEQ_DISABLE_AOT_TUNING"]:
             # Disable kernel tuning by default,
@@ -1410,23 +1452,10 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     manifest = Manifest.load(processing_out_dir / "processed" / "manifest.json")
     use_record_subdir = len(manifest.records) > 1
 
-    # Filter out existing predictions
-    filtered_manifest = filter_inputs_structure(
-        manifest=manifest,
-        outdir=out_dir,
-        skip=skip,
-        seed=seed,
-        diffusion_samples=diffusion_samples,
-        output_format=output_format,
-        write_full_pae=write_full_pae,
-        write_full_pde=write_full_pde,
-        write_embeddings=write_embeddings,
-    )
-
     # Load processed data
     processed_dir = processing_out_dir / "processed"
     processed = BoltzProcessedInput(
-        manifest=filtered_manifest,
+        manifest=manifest,
         targets_dir=processed_dir / "structures",
         msa_dir=processed_dir / "msa",
         constraints_dir=(
@@ -1444,6 +1473,22 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         ),
     )
 
+    # Determine which structure predictions are still needed for every seed.
+    structure_manifests = {
+        current_seed: filter_inputs_structure(
+            manifest=manifest,
+            outdir=out_dir,
+            skip=skip,
+            seed=current_seed,
+            diffusion_samples=diffusion_samples,
+            output_format=output_format,
+            write_full_pae=write_full_pae,
+            write_full_pde=write_full_pde,
+            write_embeddings=write_embeddings,
+        )
+        for current_seed in prediction_seeds
+    }
+
     # Set up trainer
     strategy = "auto"
     if (isinstance(devices, int) and devices > 1) or (
@@ -1451,16 +1496,16 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     ):
         start_method = "fork" if platform.system() != "win32" and platform.system() != "Windows" else "spawn"
         strategy = DDPStrategy(start_method=start_method)
-        if len(filtered_manifest.records) < devices:
+        if len(manifest.records) < devices:
             msg = (
                 "Number of requested devices is greater "
                 "than the number of predictions, taking the minimum."
             )
             click.echo(msg)
             if isinstance(devices, list):
-                devices = devices[: max(1, len(filtered_manifest.records))]
+                devices = devices[: max(1, len(manifest.records))]
             else:
-                devices = max(1, min(len(filtered_manifest.records), devices))
+                devices = max(1, min(len(manifest.records), devices))
 
     # Set up model parameters
     if model == "boltz2":
@@ -1480,55 +1525,16 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         use_paired_feature=model == "boltz2",
     )
 
-    # Create prediction writer
-    pred_writer = BoltzWriter(
-        data_dir=processed.targets_dir,
-        output_dir=out_dir / "predictions",
-        output_format=output_format,
-        boltz2=model == "boltz2",
-        write_embeddings=write_embeddings,
-        seed=seed,
-        use_record_subdir=use_record_subdir,
-    )
-
-    # Set up trainer
-    trainer = Trainer(
-        default_root_dir=processing_out_dir,
-        strategy=strategy,
-        callbacks=[pred_writer],
-        accelerator=accelerator,
-        devices=devices,
-        precision=32 if model == "boltz1" else "bf16-mixed",
-    )
-
-    if filtered_manifest.records:
-        msg = f"Running structure prediction for {len(filtered_manifest.records)} input"
-        msg += "s." if len(filtered_manifest.records) > 1 else "."
-        click.echo(msg)
-
-        # Create data module
-        if model == "boltz2":
-            data_module = Boltz2InferenceDataModule(
-                manifest=processed.manifest,
-                target_dir=processed.targets_dir,
-                msa_dir=processed.msa_dir,
-                mol_dir=mol_dir,
-                num_workers=num_workers,
-                constraints_dir=processed.constraints_dir,
-                template_dir=processed.template_dir,
-                extra_mols_dir=processed.extra_mols_dir,
-                override_method=method,
-            )
-        else:
-            data_module = BoltzInferenceDataModule(
-                manifest=processed.manifest,
-                target_dir=processed.targets_dir,
-                msa_dir=processed.msa_dir,
-                num_workers=num_workers,
-                constraints_dir=processed.constraints_dir,
-            )
-
-        # Load model
+    trainer: Optional[Trainer] = None
+    pending_structure_seeds = [
+        current_seed
+        for current_seed, filtered in structure_manifests.items()
+        if filtered.records
+    ]
+    if pending_structure_seeds:
+        # Load the structure checkpoint once, then reset the RNG before every
+        # prediction so each seed matches an equivalent single-seed process.
+        seed_everything(pending_structure_seeds[0])
         if checkpoint is None:
             if model == "boltz2":
                 checkpoint = cache / "boltz2_conf.ckpt"
@@ -1564,100 +1570,165 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         )
         model_module.eval()
 
-        # Compute structure predictions
-        trainer.predict(
-            model_module,
-            datamodule=data_module,
-            return_predictions=False,
-        )
+        for current_seed in pending_structure_seeds:
+            filtered_manifest = structure_manifests[current_seed]
+            seed_everything(current_seed)
+            msg = (
+                f"Running structure prediction for {len(filtered_manifest.records)} "
+                f"input{'s' if len(filtered_manifest.records) > 1 else ''} "
+                f"with seed {current_seed}."
+            )
+            click.echo(msg)
+
+            pred_writer = BoltzWriter(
+                data_dir=processed.targets_dir,
+                output_dir=out_dir / "predictions",
+                output_format=output_format,
+                boltz2=model == "boltz2",
+                write_embeddings=write_embeddings,
+                seed=current_seed,
+                use_record_subdir=use_record_subdir,
+            )
+            if trainer is None:
+                trainer = Trainer(
+                    default_root_dir=processing_out_dir,
+                    strategy=strategy,
+                    callbacks=[pred_writer],
+                    accelerator=accelerator,
+                    devices=devices,
+                    precision=32 if model == "boltz1" else "bf16-mixed",
+                )
+            else:
+                trainer.callbacks[0] = pred_writer
+
+            if model == "boltz2":
+                data_module = Boltz2InferenceDataModule(
+                    manifest=filtered_manifest,
+                    target_dir=processed.targets_dir,
+                    msa_dir=processed.msa_dir,
+                    mol_dir=mol_dir,
+                    num_workers=num_workers,
+                    constraints_dir=processed.constraints_dir,
+                    template_dir=processed.template_dir,
+                    extra_mols_dir=processed.extra_mols_dir,
+                    override_method=method,
+                )
+            else:
+                data_module = BoltzInferenceDataModule(
+                    manifest=filtered_manifest,
+                    target_dir=processed.targets_dir,
+                    msa_dir=processed.msa_dir,
+                    num_workers=num_workers,
+                    constraints_dir=processed.constraints_dir,
+                )
+
+            trainer.predict(
+                model_module,
+                datamodule=data_module,
+                return_predictions=False,
+            )
 
     # Check if affinity predictions are needed
     if any(r.affinity for r in manifest.records):
-        # Print header
         click.echo("\nPredicting property: affinity\n")
-
-        # Validate inputs
-        manifest_filtered = filter_inputs_affinity(
-            manifest=manifest,
-            outdir=out_dir,
-            skip=skip,
-            seed=seed,
-        )
-        if not manifest_filtered.records:
-            click.echo("Found existing affinity predictions for all inputs, skipping.")
-            if temporary_workspace is not None:
-                temporary_workspace.cleanup()
-            return
-
-        # Make affinity reproducible whether structure inference ran in this
-        # process or was skipped because its files already existed.
-        seed_everything(seed)
-
-        msg = f"Running affinity prediction for {len(manifest_filtered.records)} input"
-        msg += "s." if len(manifest_filtered.records) > 1 else "."
-        click.echo(msg)
-
-        pred_writer = BoltzAffinityWriter(
-            data_dir=processed.targets_dir,
-            output_dir=out_dir / "predictions",
-            seed=seed,
-            use_record_subdir=use_record_subdir,
-        )
-
-        data_module = Boltz2InferenceDataModule(
-            manifest=manifest_filtered,
-            target_dir=out_dir / "predictions",
-            msa_dir=processed.msa_dir,
-            mol_dir=mol_dir,
-            num_workers=num_workers,
-            constraints_dir=processed.constraints_dir,
-            template_dir=processed.template_dir,
-            extra_mols_dir=processed.extra_mols_dir,
-            override_method="other",
-            affinity=True,
-            seed=seed,
-            use_record_subdir=use_record_subdir,
-        )
-
-        predict_affinity_args = {
-            "recycling_steps": 5,
-            "sampling_steps": sampling_steps_affinity,
-            "diffusion_samples": diffusion_samples_affinity,
-            "max_parallel_samples": 1,
-            "write_confidence_summary": False,
-            "write_full_pae": False,
-            "write_full_pde": False,
+        affinity_manifests = {
+            current_seed: filter_inputs_affinity(
+                manifest=manifest,
+                outdir=out_dir,
+                skip=skip,
+                seed=current_seed,
+            )
+            for current_seed in prediction_seeds
         }
+        pending_affinity_seeds = [
+            current_seed
+            for current_seed, filtered in affinity_manifests.items()
+            if filtered.records
+        ]
 
-        # Load affinity model
-        if affinity_checkpoint is None:
-            affinity_checkpoint = cache / "boltz2_aff.ckpt"
+        if pending_affinity_seeds:
+            predict_affinity_args = {
+                "recycling_steps": 5,
+                "sampling_steps": sampling_steps_affinity,
+                "diffusion_samples": diffusion_samples_affinity,
+                "max_parallel_samples": 1,
+                "write_confidence_summary": False,
+                "write_full_pae": False,
+                "write_full_pde": False,
+            }
+            if affinity_checkpoint is None:
+                affinity_checkpoint = cache / "boltz2_aff.ckpt"
 
-        steering_args = BoltzSteeringParams()
-        steering_args.fk_steering = False
-        steering_args.physical_guidance_update = False
-        steering_args.contact_guidance_update = False
-        
-        model_module = Boltz2.load_from_checkpoint(
-            affinity_checkpoint,
-            strict=True,
-            predict_args=predict_affinity_args,
-            map_location="cpu",
-            diffusion_process_args=asdict(diffusion_params),
-            ema=False,
-            pairformer_args=asdict(pairformer_args),
-            msa_args=asdict(msa_args),
-            steering_args=asdict(steering_args),
-            affinity_mw_correction=affinity_mw_correction,
-        )
-        model_module.eval()
+            steering_args = BoltzSteeringParams()
+            steering_args.fk_steering = False
+            steering_args.physical_guidance_update = False
+            steering_args.contact_guidance_update = False
 
-        trainer.callbacks[0] = pred_writer
-        trainer.predict(
-            model_module,
-            datamodule=data_module,
-            return_predictions=False,
-        )
+            seed_everything(pending_affinity_seeds[0])
+            model_module = Boltz2.load_from_checkpoint(
+                affinity_checkpoint,
+                strict=True,
+                predict_args=predict_affinity_args,
+                map_location="cpu",
+                diffusion_process_args=asdict(diffusion_params),
+                ema=False,
+                pairformer_args=asdict(pairformer_args),
+                msa_args=asdict(msa_args),
+                steering_args=asdict(steering_args),
+                affinity_mw_correction=affinity_mw_correction,
+            )
+            model_module.eval()
+
+            for current_seed in pending_affinity_seeds:
+                manifest_filtered = affinity_manifests[current_seed]
+                seed_everything(current_seed)
+                msg = (
+                    f"Running affinity prediction for "
+                    f"{len(manifest_filtered.records)} "
+                    f"input{'s' if len(manifest_filtered.records) > 1 else ''} "
+                    f"with seed {current_seed}."
+                )
+                click.echo(msg)
+
+                pred_writer = BoltzAffinityWriter(
+                    data_dir=processed.targets_dir,
+                    output_dir=out_dir / "predictions",
+                    seed=current_seed,
+                    use_record_subdir=use_record_subdir,
+                )
+                if trainer is None:
+                    trainer = Trainer(
+                        default_root_dir=processing_out_dir,
+                        strategy=strategy,
+                        callbacks=[pred_writer],
+                        accelerator=accelerator,
+                        devices=devices,
+                        precision="bf16-mixed",
+                    )
+                else:
+                    trainer.callbacks[0] = pred_writer
+
+                data_module = Boltz2InferenceDataModule(
+                    manifest=manifest_filtered,
+                    target_dir=out_dir / "predictions",
+                    msa_dir=processed.msa_dir,
+                    mol_dir=mol_dir,
+                    num_workers=num_workers,
+                    constraints_dir=processed.constraints_dir,
+                    template_dir=processed.template_dir,
+                    extra_mols_dir=processed.extra_mols_dir,
+                    override_method="other",
+                    affinity=True,
+                    seed=current_seed,
+                    use_record_subdir=use_record_subdir,
+                )
+                trainer.predict(
+                    model_module,
+                    datamodule=data_module,
+                    return_predictions=False,
+                )
+        else:
+            click.echo("Found existing affinity predictions for all seeds, skipping.")
 
     if temporary_workspace is not None:
         temporary_workspace.cleanup()

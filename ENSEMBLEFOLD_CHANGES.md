@@ -37,6 +37,13 @@ never share preprocessing files. Slurm jobs automatically prefer `SLURM_TMPDIR` 
 exists; ordinary servers use the platform temporary directory. There is no work-directory
 CLI option.
 
+`--seed` remains the single-seed interface. `--seeds 40,41,42,43,44` runs several
+seeds in one process and is mutually exclusive with `--seed`. The prepared YAML is
+preprocessed once, the structure checkpoint is loaded once for all requested seeds,
+and the affinity checkpoint is likewise loaded at most once. RNG state is reset before
+every structure and affinity prediction so each seed follows the same path as an
+equivalent single-seed invocation. Skip checks and output names remain seed-specific.
+
 Prepared MSA paths may point to plain text, gzip, xz, or zstd data. Compression is
 detected from file magic bytes, not the filename: a real zstd stream is decompressed even
 without a `.zst` suffix, while a plain-text file named `.a3m.zst` is read as plain text.

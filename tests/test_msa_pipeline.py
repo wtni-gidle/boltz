@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
+import click
 import pytest
 import yaml
 import zstandard as zstd
@@ -18,6 +20,51 @@ from boltz.data.parse import yaml as yaml_parser
 from boltz.data.parse.a3m import parse_a3m
 from boltz.data.parse.yaml import materialize_prepared_msas, target_name_from_path
 from boltz.data.types import Manifest
+
+
+@pytest.mark.parametrize(
+    ("seed", "seed_values", "expected"),
+    [
+        (7, None, [7]),
+        (None, "7", [7]),
+        (None, "7, 11,19", [7, 11, 19]),
+        (None, "0,4294967295", [0, 4294967295]),
+    ],
+)
+def test_resolve_prediction_seeds(
+    seed: Optional[int],
+    seed_values: Optional[str],
+    expected: list[int],
+) -> None:
+    assert main_module.resolve_prediction_seeds(seed, seed_values) == expected
+
+
+def test_resolve_prediction_seeds_generates_one_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main_module.secrets, "randbits", lambda _bits: 12345)
+
+    assert main_module.resolve_prediction_seeds(None, None) == [12345]
+
+
+@pytest.mark.parametrize(
+    ("seed", "seed_values"),
+    [
+        (1, "2,3"),
+        (None, ""),
+        (None, "1,"),
+        (None, "one,2"),
+        (None, "1,1"),
+        (None, "-1"),
+        (None, "4294967296"),
+    ],
+)
+def test_resolve_prediction_seeds_rejects_invalid_values(
+    seed: Optional[int],
+    seed_values: Optional[str],
+) -> None:
+    with pytest.raises(click.ClickException):
+        main_module.resolve_prediction_seeds(seed, seed_values)
 
 
 def test_search_saves_separate_paired_and_unpaired_a3m(
@@ -231,6 +278,7 @@ def test_inference_only_uses_and_cleans_private_processed_directory(
         return manifest
 
     monkeypatch.setattr(main_module, "process_inputs", fake_process_inputs)
+    seed_args = ["--seeds", "7,8"] if use_slurm_tmp else ["--seed", "7"]
 
     result = CliRunner().invoke(
         main_module.cli,
@@ -241,8 +289,7 @@ def test_inference_only_uses_and_cleans_private_processed_directory(
             str(output_root),
             "--cache",
             str(tmp_path / "cache"),
-            "--seed",
-            "7",
+            *seed_args,
             "-D",
             "false",
             "-P",
