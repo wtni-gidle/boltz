@@ -7,6 +7,11 @@ are unchanged.
 
 ## Two-stage MSA pipeline
 
+The repository root includes `run_boltz.sh`, a portable Bash entry point for
+data-only, inference-only, multi-seed, and resume runs. It uses the active `boltz`
+installation by default, supports `BOLTZ_ENV_ACTIVATE` / `BOLTZ_BIN` overrides, and
+forwards arguments following `--` to the native CLI.
+
 `boltz predict` accepts two boolean stage controls:
 
 ```bash
