@@ -67,20 +67,12 @@ class BoltzProcessedInput:
     extra_mols_dir: Optional[Path] = None
 
 
-def resolve_prediction_seeds(
-    seed: Optional[int],
-    seed_values: Optional[str],
-) -> list[int]:
-    """Resolve the single- or multi-seed CLI options."""
-    if seed is not None and seed_values is not None:
-        msg = "--seed and --seeds are mutually exclusive."
-        raise click.UsageError(msg)
-
+def resolve_prediction_seeds(seed_values: Optional[str]) -> list[int]:
+    """Resolve the one-or-more-seed CLI option."""
     if seed_values is None:
-        if seed is None:
-            seed = secrets.randbits(32)
-            click.echo(f"No seed provided; using generated seed {seed}.")
-        resolved = [seed]
+        generated_seed = secrets.randbits(32)
+        click.echo(f"No seeds provided; using generated seed {generated_seed}.")
+        resolved = [generated_seed]
     else:
         raw_values = [value.strip() for value in seed_values.split(",")]
         if not raw_values or any(not value for value in raw_values):
@@ -94,7 +86,7 @@ def resolve_prediction_seeds(
 
     if any(value < 0 or value >= 2**32 for value in resolved):
         msg = "Seeds must be between 0 and 4294967295 inclusive."
-        raise click.BadParameter(msg, param_hint="--seed/--seeds")
+        raise click.BadParameter(msg, param_hint="--seeds")
     if len(resolved) != len(set(resolved)):
         msg = "--seeds must not contain duplicate values."
         raise click.BadParameter(msg, param_hint="--seeds")
@@ -1129,21 +1121,12 @@ def cli() -> None:
     help="Whether to skip seeds with complete existing outputs. Default is False.",
 )
 @click.option(
-    "--seed",
-    type=int,
-    help=(
-        "Seed to use for random number generation. If omitted, a random seed is "
-        "generated and reported."
-    ),
-    default=None,
-)
-@click.option(
     "--seeds",
-    "seed_values",
     type=str,
     help=(
-        "Comma-separated seeds to run in one process. Preprocessing and model "
-        "loading are shared across seeds. Mutually exclusive with --seed."
+        "One seed or a comma-separated list of seeds to run in one process. "
+        "Preprocessing and model loading are shared across seeds. If omitted, "
+        "one random seed is generated and reported."
     ),
     default=None,
 )
@@ -1287,8 +1270,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     output_format: Literal["pdb", "mmcif"] = "mmcif",
     num_workers: int = 2,
     skip: bool = False,
-    seed: Optional[int] = None,
-    seed_values: Optional[str] = None,
+    seeds: Optional[str] = None,
     use_msa_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
     msa_pairing_strategy: str = "greedy",
@@ -1333,7 +1315,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         # Ignore matmul precision warning
         torch.set_float32_matmul_precision("highest")
 
-        prediction_seeds = resolve_prediction_seeds(seed, seed_values)
+        prediction_seeds = resolve_prediction_seeds(seeds)
         seed_everything(prediction_seeds[0])
 
         for key in ["CUEQ_DEFAULT_CONFIG", "CUEQ_DISABLE_AOT_TUNING"]:

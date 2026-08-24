@@ -11,7 +11,7 @@ are unchanged.
 
 ```bash
 boltz predict target.yaml --out_dir results -D true -P false --use_msa_server
-boltz predict results/target/target_data.yaml --out_dir results -D false -P true --seed 42
+boltz predict results/target/target_data.yaml --out_dir results -D false -P true --seeds 42
 ```
 
 Data-only search writes one paired and one unpaired A3M for every auto-MSA protein
@@ -37,14 +37,14 @@ never share preprocessing files. Slurm jobs automatically prefer `SLURM_TMPDIR` 
 exists; ordinary servers use the platform temporary directory. There is no work-directory
 CLI option.
 
-`--seed` remains the single-seed interface. `--seeds 40,41,42,43,44` runs several
-seeds in one process and is mutually exclusive with `--seed`. The prepared YAML is
+`--seeds 42` runs one seed, while `--seeds 40,41,42,43,44` runs several seeds in one
+process. The prepared YAML is
 preprocessed once, the structure checkpoint is loaded once for all requested seeds,
 and the affinity checkpoint is likewise loaded at most once. RNG state is reset before
 every structure and affinity prediction. Skip checks and output names remain
 seed-specific. Because all seeds share one GPU process and model instance, outputs are
 not guaranteed to be bitwise or coordinate-identical to separate single-seed processes;
-use independent `--seed` invocations when strict cross-process reproducibility matters.
+use independent `--seeds 42` invocations when strict cross-process reproducibility matters.
 
 Prepared MSA paths may point to plain text, gzip, xz, or zstd data. Compression is
 detected from file magic bytes, not the filename: a real zstd stream is decompressed even
@@ -87,5 +87,5 @@ is named `pre_affinity_seed-<seed>.npz`, preventing different seeds from overwri
 another. The affinity stage is reseeded so a resumed affinity-only run matches a run in
 which structure and affinity inference execute together.
 
-If `--seed` is omitted, the CLI generates, reports, and uses a concrete random seed so
+If `--seeds` is omitted, the CLI generates, reports, and uses one concrete random seed so
 outputs never collapse under a shared `seed-None` name.

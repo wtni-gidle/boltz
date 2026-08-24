@@ -7,8 +7,9 @@ Once `boltz` is installed, you can run predictions with:
 * `<INPUT_PATH>` can be either a single .yaml or .fasta file (YAML is preferred; FASTA is deprecated), or a directory, in which case predictions will be run on all `.yaml` and `.fasta` files inside.
 * If you include `--use_msa_server`, the MSA will be generated automatically via the mmseqs2 server. Without this flag, you must provide a pre-computed MSA.
 * If you include `--use_potentials`, Boltz will apply inference-time potentials to improve the physical plausibility of the predicted poses.
-* By default, Boltz runs structure and affinity prediction even if matching output files already exist. Add `--skip` to skip a seed only when all required model, summary confidence, and pLDDT files are present. Cached preprocessed inputs are still reused; use a separate output directory when changing MSA, templates, constraints, or other input details.
+* By default, Boltz runs structure and affinity prediction even if matching output files already exist. Add `--skip` to skip a seed only when all required model, summary confidence, and pLDDT files are present. The check does not validate the MSA, templates, constraints, checkpoint, or inference parameters, so use a separate output directory for different experimental conditions.
 * `-D true -P false` runs only the MSA data pipeline and writes `<out_dir>/<target>/<target>_data.yaml` plus separate paired/unpaired A3M files. `-D false -P true` accepts that generated YAML directly, creates the native keyed CSV at runtime, and runs preprocessing and inference. At least one stage must be enabled.
+* `--seeds 42` runs one seed, while `--seeds 40,41,42` runs several seeds sequentially in one process while sharing preprocessing and checkpoint loading. When omitted, one concrete seed is generated and printed.
 
 
 ## Input format
@@ -169,6 +170,7 @@ Examples of common options include:
 | `--num_subsampled_msa`          | `INTEGER`       | `1024` | The number of MSA sequences to subsample.                                                                                                                             |
 | `--no_kernels`          | `FLAG`       | `False` | Whether to not use trifast kernels for triangular updates..                                                                                                                             |
 | `--skip`                 | `FLAG`          | `False`                     | Whether to skip seeds with complete existing prediction outputs.                                                                                                                    |
+| `--seeds`                | `TEXT`          | generated                   | One 32-bit seed or a comma-separated list to run sequentially in one process. When omitted, one seed is generated and printed. Preprocessing and checkpoint loading are shared, while output and skip checks remain seed-specific. |
 | `--use_msa_server`       | `FLAG`          | `False`                     | Whether to use the msa server to generate msa's.                                                                                                                                    |
 | `--msa_server_url`       | str             | `https://api.colabfold.com` | MSA server url. Used only if --use_msa_server is set.                                                                                                                               |
 | `--msa_pairing_strategy` | str             | `greedy`                    | Pairing strategy to use. Used only if --use_msa_server is set. Options are 'greedy' and 'complete'                                                                                  |
@@ -178,17 +180,17 @@ Examples of common options include:
 
 ## Output
 
-For `target.yaml` and `--out_dir results`, job artifacts are organized below `results/target/`. A generated `target_data.yaml` maps back to the same target by removing the `_data` filename suffix:
+For `target.yaml` and `--out_dir results`, job artifacts are organized below `results/target/`. A generated `target_data.yaml` maps back to the same target by removing the `_data` filename suffix.
+
+After a data-only run followed by inference-only, the persistent layout is:
+
 ```
 results/
 └── target/
     ├── target_data.yaml
     ├── msa/
     │   ├── target_0_paired.a3m
-    │   ├── target_0_unpaired.a3m
-    │   └── target_0.csv
-    ├── processed/
-    ├── lightning_logs/
+    │   └── target_0_unpaired.a3m
     └── predictions/
         ├── models/seed-[seed]_sample-0_model.cif
         ├── summary_confidences/seed-[seed]_sample-0_summary_confidences.json
@@ -198,7 +200,10 @@ results/
         ├── embeddings/seed-[seed]_embeddings.npz
         └── affinity/seed-[seed]_affinity.json
 ```
-For the normal one-target job, prediction categories are written directly below `predictions/`. Legacy multi-record invocations retain a `<record.id>/` subdirectory to prevent filename collisions. Samples retain their original diffusion sample index; they are not renamed by confidence rank. Confidence scores remain available in the summary JSON. The `processed` folder contains the processed input files used during inference.
+
+Inference-only creates the keyed CSV, `processed/` data, manifest, and Lightning working files in a process-private temporary directory and removes them after prediction. It therefore does **not** persist `target_0.csv`, `processed/`, or `lightning_logs/` below `results/target/`. A combined `-D true -P true` run retains the native persistent preprocessing behavior and may include those paths.
+
+For the normal one-target job, prediction categories are written directly below `predictions/`. Legacy multi-record invocations retain a `<record.id>/` subdirectory to prevent filename collisions. Samples retain their original diffusion sample index; they are not renamed by confidence rank. Confidence scores remain available in the summary JSON. With `--seeds`, every seed uses the same layout and filename pattern; requested seeds are run sequentially, and `--skip` evaluates completeness independently for each seed.
 
 Each output folder includes a confidence `.json` file with aggregated confidence scores for that sample. Its structure is:
 ```yaml
