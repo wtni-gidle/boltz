@@ -26,7 +26,11 @@ from boltz.data import const
 from boltz.data.module.inference import BoltzInferenceDataModule
 from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
 from boltz.data.mol import load_canonicals
-from boltz.data.msa.pipeline import materialize_msa_csvs, search_msa_components
+from boltz.data.msa.pipeline import (
+    component_paths,
+    materialize_msa_csvs,
+    search_msa_components,
+)
 from boltz.data.parse.a3m import parse_a3m
 from boltz.data.parse.csv import parse_csv
 from boltz.data.parse.fasta import parse_fasta
