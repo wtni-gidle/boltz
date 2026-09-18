@@ -351,7 +351,7 @@ def _touch_complete_structure_outputs(
     include_embeddings: bool = False,
     use_record_subdir: bool = True,
 ) -> None:
-    target_dir = out_dir / "predictions"
+    target_dir = out_dir
     if use_record_subdir:
         target_dir = target_dir / record_id
     models_dir = target_dir / "models"
@@ -374,6 +374,65 @@ def _touch_complete_structure_outputs(
         embeddings_dir = target_dir / "embeddings"
         embeddings_dir.mkdir()
         (embeddings_dir / f"seed-{seed}_embeddings.npz").touch()
+
+
+def test_skip_uses_direct_job_categories(tmp_path: Path) -> None:
+    prefix = "seed-7_sample-0"
+    for relative in (
+        f"models/{prefix}_model.cif",
+        f"summary_confidences/{prefix}_summary_confidences.json",
+        f"full_data/plddt_{prefix}.npz",
+    ):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+
+    filtered = filter_inputs_structure(
+        Manifest([_record("target")]),
+        tmp_path,
+        skip=True,
+        seed=7,
+    )
+
+    assert filtered.records == []
+
+
+def test_wrapper_rejects_pdb_output(tmp_path: Path) -> None:
+    from click.testing import CliRunner
+
+    from boltz.main import cli
+
+    source = tmp_path / "target.yaml"
+    source.write_text("sequences: []\n", encoding="utf-8")
+    result = CliRunner().invoke(
+        cli,
+        ["predict", str(source), "--output_format", "pdb"],
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid value for '--output_format'" in result.output
+
+
+def test_legacy_prediction_directory_does_not_complete_new_root(
+    tmp_path: Path,
+) -> None:
+    record = _record("target")
+    _touch_complete_structure_outputs(
+        tmp_path / "predictions",
+        record.id,
+        seed=7,
+        diffusion_samples=1,
+        use_record_subdir=False,
+    )
+
+    filtered = filter_inputs_structure(
+        Manifest([record]),
+        tmp_path,
+        skip=True,
+        seed=7,
+    )
+
+    assert [item.id for item in filtered.records] == [record.id]
 
 
 def test_structure_skip_is_seed_sample_and_record_specific(tmp_path: Path) -> None:
@@ -440,7 +499,7 @@ def test_affinity_skip_is_seed_and_record_specific(tmp_path: Path) -> None:
     complete = _record("complete", affinity=True)
     incomplete = _record("incomplete", affinity=True)
     manifest = Manifest([complete, incomplete])
-    affinity_dir = tmp_path / "predictions" / complete.id / "affinity"
+    affinity_dir = tmp_path / complete.id / "affinity"
     affinity_dir.mkdir(parents=True)
     (affinity_dir / "seed-23_affinity.json").touch()
 
@@ -452,7 +511,7 @@ def test_affinity_skip_is_seed_and_record_specific(tmp_path: Path) -> None:
 def test_single_record_affinity_skip_uses_flat_prediction_dir(tmp_path: Path) -> None:
     record = _record("target", affinity=True)
     manifest = Manifest([record])
-    affinity_dir = tmp_path / "predictions" / "affinity"
+    affinity_dir = tmp_path / "affinity"
     affinity_dir.mkdir(parents=True)
     (affinity_dir / "seed-23_affinity.json").touch()
 
@@ -471,7 +530,7 @@ def test_structure_skip_regenerates_missing_affinity_handoff(tmp_path: Path) -> 
         diffusion_samples=1,
         use_record_subdir=False,
     )
-    target_dir = tmp_path / "predictions"
+    target_dir = tmp_path
 
     filtered = filter_inputs_structure(manifest, tmp_path, skip=True, seed=29)
     assert [item.id for item in filtered.records] == [record.id]

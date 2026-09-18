@@ -101,9 +101,8 @@ class BoltzWriter(BasePredictionWriter):
             # Remove masked chains completely
             structure = structure.remove_invalid_chains()
 
-            # A normal wrapper job contains one record, so predictions are
-            # written directly below predictions/. Retain record subdirectories
-            # only for legacy multi-record invocations to prevent collisions.
+            # A file input writes directly below its job directory. Directory
+            # inputs retain record subdirectories to prevent collisions.
             record_dir = (
                 self.output_dir / record.id
                 if self.use_record_subdir

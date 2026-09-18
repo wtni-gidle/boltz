@@ -159,7 +159,7 @@ Examples of common options include:
 | `--diffusion_samples`    | `INTEGER`       | `1`                         | The number of diffusion samples to use for prediction.                                                                                                                              |
 | `--max_parallel_samples` | `INTEGER` | `5`                       | maximum number of samples to predict in parallel. |
 | `--step_scale`           | `FLOAT`         | `1.638` for Boltz-1 and `1.5` for Boltz-2                     | The step size is related to the temperature at which the diffusion process samples the distribution. The lower the higher the diversity among samples (recommended between 1 and 2). |
-| `--output_format`        | `[pdb,mmcif]`   | `mmcif`                     | The output format to use for the predictions.                                                                                                                                       |
+| `--output_format`        | `[mmcif]`       | `mmcif`                     | Wrapper predictions use mmCIF. The lower-level writer still supports PDB for library callers.                                                                                       |
 | `--num_workers`          | `INTEGER`       | `2`                         | The number of dataloader workers to use for prediction.                                                                                                                             |
 | `-D`, `--run_data_pipeline` | `BOOLEAN`    | `True`                      | Whether to search and save separate paired/unpaired MSA files.                                                                                                                       |
 | `-P`, `--run_inference`  | `BOOLEAN`       | `True`                      | Whether to run preprocessing and model inference.                                                                                                                                   |
@@ -195,19 +195,27 @@ results/
     ├── msa/
     │   ├── target_A_paired.a3m.zst
     │   └── target_A_unpaired.a3m.zst
-    └── predictions/
-        ├── models/seed-[seed]_sample-0_model.cif
-        ├── summary_confidences/seed-[seed]_sample-0_summary_confidences.json
-        ├── full_data/plddt_seed-[seed]_sample-0.npz
-        ├── full_data/pae_seed-[seed]_sample-0.npz
-        ├── full_data/pde_seed-[seed]_sample-0.npz
-        ├── embeddings/seed-[seed]_embeddings.npz
-        └── affinity/seed-[seed]_affinity.json
+    ├── models/seed-[seed]_sample-0_model.cif
+    ├── summary_confidences/seed-[seed]_sample-0_summary_confidences.json
+    ├── full_data/plddt_seed-[seed]_sample-0.npz
+    ├── full_data/pae_seed-[seed]_sample-0.npz
+    ├── full_data/pde_seed-[seed]_sample-0.npz
+    ├── embeddings/seed-[seed]_embeddings.npz
+    └── affinity/seed-[seed]_affinity.json
 ```
 
 Inference-only creates the keyed CSV, `processed/` data, manifest, and Lightning working files in a process-private temporary directory and removes them after prediction. It therefore does **not** persist `target_A.csv`, `processed/`, or `lightning_logs/` below `results/target/`. A combined `-D true -P true` run retains the native persistent preprocessing behavior and may include those paths.
 
-For the normal one-target job, prediction categories are written directly below `predictions/`. Legacy multi-record invocations retain a `<record.id>/` subdirectory to prevent filename collisions. Samples retain their original diffusion sample index; they are not renamed by confidence rank. Confidence scores remain available in the summary JSON. With `--seeds`, every seed uses the same layout and filename pattern; requested seeds are run sequentially, and `--skip` evaluates completeness independently for each seed.
+For a file input, prediction categories are written directly below the job
+directory. For a directory input, each record is written below
+`<out_dir>/<record.id>/`, even if the directory contains only one record or
+skip filtering leaves one record, so names cannot collide. Existing files below
+the former `predictions/` directory are not migrated or treated as current
+outputs. Samples retain their original diffusion sample index; they are not
+renamed by confidence rank. Confidence scores remain available in the summary
+JSON. With `--seeds`, every seed uses the same layout and filename pattern;
+requested seeds are run sequentially, and `--skip` evaluates completeness
+independently for each seed.
 
 Each output folder includes a confidence `.json` file with aggregated confidence scores for that sample. Its structure is:
 ```yaml

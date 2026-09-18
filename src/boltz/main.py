@@ -366,6 +366,7 @@ def filter_inputs_structure(  # noqa: C901
     write_full_pae: bool = False,
     write_full_pde: bool = False,
     write_embeddings: bool = False,
+    use_record_subdir: Optional[bool] = None,
 ) -> Manifest:
     """Filter the manifest to only include missing predictions.
 
@@ -397,11 +398,12 @@ def filter_inputs_structure(  # noqa: C901
 
     """
     structure_suffix = "pdb" if output_format == "pdb" else "cif"
-    use_record_subdir = len(manifest.records) > 1
+    if use_record_subdir is None:
+        use_record_subdir = len(manifest.records) > 1
 
     def outputs_complete(record: Record) -> bool:
         """Check the lightweight AF3-style output contract for one seed."""
-        target_dir = outdir / "predictions"
+        target_dir = outdir
         if use_record_subdir:
             target_dir = target_dir / record.id
         models_dir = target_dir / "models"
@@ -463,6 +465,7 @@ def filter_inputs_affinity(
     skip: bool = False,
     *,
     seed: Optional[int] = None,
+    use_record_subdir: Optional[bool] = None,
 ) -> Manifest:
     """Check the input data and output directory for affinity.
 
@@ -484,7 +487,8 @@ def filter_inputs_affinity(
 
     """
     click.echo("Checking input data for affinity.")
-    use_record_subdir = len(manifest.records) > 1
+    if use_record_subdir is None:
+        use_record_subdir = len(manifest.records) > 1
 
     # Get all affinity targets
     existing = {
@@ -492,9 +496,7 @@ def filter_inputs_affinity(
         for r in manifest.records
         if r.affinity
         and (
-            outdir
-            / "predictions"
-            / (r.id if use_record_subdir else "")
+            outdir / (r.id if use_record_subdir else "")
             / "affinity"
             / f"seed-{seed}_affinity.json"
         ).is_file()
@@ -887,7 +889,6 @@ def process_inputs(
     processed_constraints_dir = out_dir / "processed" / "constraints"
     processed_templates_dir = out_dir / "processed" / "templates"
     processed_mols_dir = out_dir / "processed" / "mols"
-    predictions_dir = out_dir / "predictions"
 
     out_dir.mkdir(parents=True, exist_ok=True)
     msa_dir.mkdir(parents=True, exist_ok=True)
@@ -897,7 +898,6 @@ def process_inputs(
     processed_constraints_dir.mkdir(parents=True, exist_ok=True)
     processed_templates_dir.mkdir(parents=True, exist_ok=True)
     processed_mols_dir.mkdir(parents=True, exist_ok=True)
-    predictions_dir.mkdir(parents=True, exist_ok=True)
 
     # Load CCD
     if boltz2:
@@ -1116,7 +1116,7 @@ def cli() -> None:
 )
 @click.option(
     "--output_format",
-    type=click.Choice(["pdb", "mmcif"]),
+    type=click.Choice(["mmcif"]),
     help="The output format to use for the predictions. Default is mmcif.",
     default="mmcif",
 )
@@ -1359,7 +1359,11 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     # top-level YAML ``name`` takes precedence over the filename; generated
     # ``*_data.yaml`` inputs persist that name so both stages share a directory.
     data = Path(data).expanduser()
-    out_dir = Path(out_dir).expanduser() / target_name_from_path(data)
+    requested_output_root = Path(out_dir).expanduser()
+    input_is_directory = data.is_dir()
+    out_dir = requested_output_root / target_name_from_path(data)
+    prediction_output_dir = requested_output_root if input_is_directory else out_dir
+    use_record_subdir = input_is_directory
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Download necessary data and model
@@ -1443,8 +1447,6 @@ def predict(  # noqa: C901, PLR0915, PLR0912
 
     # Load manifest
     manifest = Manifest.load(processing_out_dir / "processed" / "manifest.json")
-    use_record_subdir = len(manifest.records) > 1
-
     # Load processed data
     processed_dir = processing_out_dir / "processed"
     processed = BoltzProcessedInput(
@@ -1470,7 +1472,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     structure_manifests = {
         current_seed: filter_inputs_structure(
             manifest=manifest,
-            outdir=out_dir,
+            outdir=prediction_output_dir,
             skip=skip,
             seed=current_seed,
             diffusion_samples=diffusion_samples,
@@ -1478,6 +1480,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             write_full_pae=write_full_pae,
             write_full_pde=write_full_pde,
             write_embeddings=write_embeddings,
+            use_record_subdir=use_record_subdir,
         )
         for current_seed in prediction_seeds
     }
@@ -1575,7 +1578,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
 
             pred_writer = BoltzWriter(
                 data_dir=processed.targets_dir,
-                output_dir=out_dir / "predictions",
+                output_dir=prediction_output_dir,
                 output_format=output_format,
                 boltz2=model == "boltz2",
                 write_embeddings=write_embeddings,
@@ -1627,9 +1630,10 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         affinity_manifests = {
             current_seed: filter_inputs_affinity(
                 manifest=manifest,
-                outdir=out_dir,
+                outdir=prediction_output_dir,
                 skip=skip,
                 seed=current_seed,
+                use_record_subdir=use_record_subdir,
             )
             for current_seed in prediction_seeds
         }
@@ -1685,7 +1689,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
 
                 pred_writer = BoltzAffinityWriter(
                     data_dir=processed.targets_dir,
-                    output_dir=out_dir / "predictions",
+                    output_dir=prediction_output_dir,
                     seed=current_seed,
                     use_record_subdir=use_record_subdir,
                 )
@@ -1703,7 +1707,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
 
                 data_module = Boltz2InferenceDataModule(
                     manifest=manifest_filtered,
-                    target_dir=out_dir / "predictions",
+                    target_dir=prediction_output_dir,
                     msa_dir=processed.msa_dir,
                     mol_dir=mol_dir,
                     num_workers=num_workers,
