@@ -14,7 +14,7 @@ usage() {
     echo "Please make sure all required parameters are given"
     echo "Usage: $0 <OPTIONS>"
     echo "Required Parameters:"
-    echo "-i <input_path>                 Input YAML/FASTA file or a directory of inputs."
+    echo "-i <input_path>                 Input JSON file or a directory of JSON inputs."
     echo "-o <output_dir>                 Directory in which results will be saved."
     echo "Optional Parameters:"
     echo "-d <gpu_device>                 CUDA device IDs, for example 0 or 0,1. (default: 0)"
@@ -31,10 +31,10 @@ usage() {
     echo ""
     echo "Examples:"
     echo "  # Run only the data pipeline."
-    echo "  $0 -i seq.yaml -o result -D true -P false"
+    echo "  $0 -i seq.json -o result -D true -P false"
     echo ""
-    echo "  # Read seq_data.yaml and predict five seeds."
-    echo "  $0 -i result/seq/seq_data.yaml -o result -D false -P true -r 1,2,3,4,5 -n 5 -S true"
+    echo "  # Read seq_data.json and predict five seeds."
+    echo "  $0 -i result/seq/seq_data.json -o result -D false -P true -r 1,2,3,4,5 -n 5 -S true"
     exit 1
 }
 

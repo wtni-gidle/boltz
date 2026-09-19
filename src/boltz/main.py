@@ -1,3 +1,4 @@
+import json
 import multiprocessing
 import os
 import pickle
@@ -15,7 +16,6 @@ from typing import Literal, Optional
 
 import click
 import torch
-import yaml
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.utilities import rank_zero_only
@@ -28,13 +28,18 @@ from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
 from boltz.data.mol import load_canonicals
 from boltz.data.msa.pipeline import (
     component_paths,
+    materialize_msa_csv,
     materialize_msa_csvs,
     search_msa_components,
 )
 from boltz.data.parse.a3m import parse_a3m
 from boltz.data.parse.csv import parse_csv
-from boltz.data.parse.fasta import parse_fasta
-from boltz.data.parse.yaml import parse_yaml, target_name_from_path
+from boltz.data.parse.json import (
+    load_input_schema,
+    parse_json,
+    rebase_schema_resource_paths,
+    target_name_from_path,
+)
 from boltz.data.types import MSA, Manifest, Record, Target
 from boltz.data.write.writer import BoltzAffinityWriter, BoltzWriter
 from boltz.model.models.boltz1 import Boltz1
@@ -333,26 +338,35 @@ def check_inputs(data: Path) -> list[Path]:
     """
     click.echo("Checking input data.")
 
-    # Check if data is a directory
+    # Check formats and names before downloads or output creation.
     if data.is_dir():
-        data: list[Path] = list(data.glob("*"))
-
-        # Filter out non .fasta or .yaml files, raise
-        # an error on directory and other file types
-        for d in data:
-            if d.is_dir():
-                msg = f"Found directory {d} instead of .fasta or .yaml."
-                raise RuntimeError(msg)
-            if d.suffix.lower() not in (".fa", ".fas", ".fasta", ".yml", ".yaml"):
-                msg = (
-                    f"Unable to parse filetype {d.suffix}, "
-                    "please provide a .fasta or .yaml file."
-                )
-                raise RuntimeError(msg)
+        paths: list[Path] = sorted(data.iterdir())
     else:
-        data = [data]
+        paths = [data]
 
-    return data
+    names: dict[str, Path] = {}
+    for path in paths:
+        if path.is_dir():
+            msg = f"Found directory {path}; Boltz molecule inputs must be JSON files."
+            raise RuntimeError(msg)
+        if path.suffix.lower() != ".json":
+            msg = (
+                f"Unable to parse filetype {path.suffix}; "
+                "please provide a .json file containing a JSON object."
+            )
+            raise RuntimeError(msg)
+
+        target_name = target_name_from_path(path)
+        collision_key = target_name.casefold()
+        if collision_key in names:
+            msg = (
+                f"Duplicate Boltz target name {target_name!r} in {names[collision_key]} "
+                f"and {path}."
+            )
+            raise ValueError(msg)
+        names[collision_key] = path
+
+    return paths
 
 
 def filter_inputs_structure(  # noqa: C901
@@ -578,10 +592,8 @@ def parse_input_target(
     msa_materialization_dir: Optional[Path] = None,
 ) -> Target:
     """Parse one supported Boltz input file."""
-    if path.suffix.lower() in (".fa", ".fas", ".fasta"):
-        return parse_fasta(path, ccd, mol_dir, boltz2)
-    if path.suffix.lower() in (".yml", ".yaml"):
-        return parse_yaml(
+    if path.suffix.lower() == ".json":
+        return parse_json(
             path,
             ccd,
             mol_dir,
@@ -589,11 +601,11 @@ def parse_input_target(
             msa_materialization_dir=msa_materialization_dir,
         )
     if path.is_dir():
-        msg = f"Found directory {path} instead of .fasta or .yaml."
+        msg = f"Found directory {path} instead of a JSON input file."
         raise RuntimeError(msg)
     msg = (
         f"Unable to parse filetype {path.suffix}, "
-        "please provide a .fasta or .yaml file."
+        "please provide a .json file containing a JSON object."
     )
     raise RuntimeError(msg)
 
@@ -617,21 +629,22 @@ def collect_auto_msas(target: Target, msa_dir: Path) -> dict[str, str]:
     return to_generate
 
 
-def write_data_yaml(
+def write_data_json(
     source_path: Path,
     out_dir: Path,
     target: Target,
     auto_msas: dict[str, str],
 ) -> Path:
-    """Write the post-data-pipeline Boltz YAML used for later inference."""
-    if source_path.suffix.lower() not in (".yml", ".yaml"):
-        msg = "Staged data-pipeline output currently requires a YAML input."
+    """Write the post-data-pipeline Boltz JSON used for later inference."""
+    if source_path.suffix.lower() != ".json":
+        msg = "Staged data-pipeline output requires a JSON input."
         raise ValueError(msg)
 
-    with source_path.open() as handle:
-        prepared_schema = yaml.safe_load(handle)
+    prepared_schema = load_input_schema(source_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rebase_schema_resource_paths(prepared_schema, source_path, out_dir)
 
-    # Persist the resolved job name so the prepared YAML remains stable even
+    # Persist the resolved job name so the prepared JSON remains stable even
     # if it is renamed before an inference-only run.
     prepared_schema["name"] = target.record.id
 
@@ -652,8 +665,8 @@ def write_data_yaml(
             "unpaired": str(unpaired_path.relative_to(out_dir)),
         }
 
-    data_path = out_dir / f"{target.record.id}_data.yaml"
-    data_path.write_text(yaml.safe_dump(prepared_schema, sort_keys=False))
+    data_path = out_dir / f"{target.record.id}_data.json"
+    data_path.write_text(json.dumps(prepared_schema, indent=2) + "\n")
     click.echo(f"Prepared Boltz input written to {data_path}")
     return data_path
 
@@ -679,6 +692,7 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
     processed_mols_dir: Path,
     structure_dir: Path,
     records_dir: Path,
+    prepared_output_root: Path,
 ) -> None:
     try:
         target = parse_input_target(
@@ -691,6 +705,8 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
 
         # Get target id
         target_id = target.record.id
+        prepared_dir = prepared_output_root / target_id
+        prepared_msa_dir = prepared_dir / "msa"
 
         # Resolve auto-MSA entities to runtime CSV paths.
         to_generate = collect_auto_msas(target, msa_dir)
@@ -705,10 +721,11 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
                     "protein entities."
                 )
                 click.echo(msg)
-                compute_msa(
+                prepared_msa_dir.mkdir(parents=True, exist_ok=True)
+                search_msa_components(
                     data=to_generate,
                     target_id=target_id,
-                    msa_dir=msa_dir,
+                    msa_dir=prepared_msa_dir,
                     msa_server_url=msa_server_url,
                     msa_pairing_strategy=msa_pairing_strategy,
                     msa_server_username=msa_server_username,
@@ -716,14 +733,25 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
                     api_key_header=api_key_header,
                     api_key_value=api_key_value,
                 )
+                for msa_id, sequence in to_generate.items():
+                    paired_path, unpaired_path = component_paths(
+                        prepared_msa_dir,
+                        msa_id,
+                    )
+                    materialize_msa_csv(
+                        paired_path=paired_path,
+                        unpaired_path=unpaired_path,
+                        csv_path=msa_dir / f"{msa_id}.csv",
+                        query_sequence=sequence,
+                    )
             else:
                 click.echo(f"Materializing prepared MSA files for {path}.")
                 materialize_msa_csvs(data=to_generate, msa_dir=msa_dir)
 
         if run_data_pipeline:
-            write_data_yaml(
+            write_data_json(
                 source_path=path,
-                out_dir=msa_dir.parent,
+                out_dir=prepared_dir,
                 target=target,
                 auto_msas=to_generate,
             )
@@ -815,6 +843,7 @@ def process_inputs(
     api_key_value: Optional[str] = None,
     boltz2: bool = False,
     preprocessing_threads: int = 1,
+    prepared_output_root: Optional[Path] = None,
 ) -> Manifest:
     """Process the input data and output directory.
 
@@ -851,6 +880,9 @@ def process_inputs(
         The manifest of the processed input data.
 
     """
+    if prepared_output_root is None:
+        prepared_output_root = out_dir
+
     # Validate mutually exclusive authentication methods
     has_basic_auth = msa_server_username and msa_server_password
     has_api_key = api_key_value is not None
@@ -928,6 +960,7 @@ def process_inputs(
         processed_mols_dir=processed_mols_dir,
         structure_dir=structure_dir,
         records_dir=records_dir,
+        prepared_output_root=prepared_output_root,
     )
 
     # Parse input data
@@ -964,48 +997,62 @@ def prepare_msa_inputs(
     msa_server_password: Optional[str] = None,
     api_key_header: Optional[str] = None,
     api_key_value: Optional[str] = None,
+    prepared_output_root: Optional[Path] = None,
 ) -> None:
-    """Search MSAs and write an executable ``<target>_data.yaml`` input."""
-    msa_dir = out_dir / "msa"
-    msa_dir.mkdir(parents=True, exist_ok=True)
+    """Search MSAs and write executable per-target JSON inputs."""
+    if prepared_output_root is None:
+        prepared_output_root = out_dir
     if boltz2:
         ccd = load_canonicals(mol_dir)
     else:
         with ccd_path.open("rb") as file:
             ccd = pickle.load(file)  # noqa: S301
 
-    for path in data:
-        target = parse_input_target(path, ccd, mol_dir, boltz2)
-        to_generate = collect_auto_msas(target, msa_dir)
-        if to_generate and not use_msa_server:
-            msg = (
-                f"Input {path} has auto MSA entities, but --use_msa_server "
-                "was not set."
+    with tempfile.TemporaryDirectory(prefix="boltz-prepare-") as temp_dir:
+        private_msa_root = Path(temp_dir)
+        for path in data:
+            target = parse_input_target(
+                path,
+                ccd,
+                mol_dir,
+                boltz2,
+                msa_materialization_dir=(
+                    private_msa_root / target_name_from_path(path)
+                ),
             )
-            raise RuntimeError(msg)
-        if to_generate:
-            click.echo(
-                f"Preparing paired/unpaired MSA files for {path} "
-                f"({len(to_generate)} protein entities)."
-            )
-            search_msa_components(
-                data=to_generate,
-                target_id=target.record.id,
-                msa_dir=msa_dir,
-                msa_server_url=msa_server_url,
-                msa_pairing_strategy=msa_pairing_strategy,
-                msa_server_username=msa_server_username,
-                msa_server_password=msa_server_password,
-                api_key_header=api_key_header,
-                api_key_value=api_key_value,
-            )
+            target_dir = prepared_output_root / target.record.id
+            msa_dir = target_dir / "msa"
+            msa_dir.mkdir(parents=True, exist_ok=True)
+            to_generate = collect_auto_msas(target, msa_dir)
+            if to_generate and not use_msa_server:
+                msg = (
+                    f"Input {path} has auto MSA entities, but --use_msa_server "
+                    "was not set."
+                )
+                raise RuntimeError(msg)
+            if to_generate:
+                click.echo(
+                    f"Preparing paired/unpaired MSA files for {path} "
+                    f"({len(to_generate)} protein entities)."
+                )
+                search_msa_components(
+                    data=to_generate,
+                    target_id=target.record.id,
+                    msa_dir=msa_dir,
+                    msa_server_url=msa_server_url,
+                    msa_pairing_strategy=msa_pairing_strategy,
+                    msa_server_username=msa_server_username,
+                    msa_server_password=msa_server_password,
+                    api_key_header=api_key_header,
+                    api_key_value=api_key_value,
+                )
 
-        write_data_yaml(
-            source_path=path,
-            out_dir=out_dir,
-            target=target,
-            auto_msas=to_generate,
-        )
+            write_data_json(
+                source_path=path,
+                out_dir=target_dir,
+                target=target,
+                auto_msas=to_generate,
+            )
 
 
 @click.group()
@@ -1305,6 +1352,19 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         msg = "At least one of --run_data_pipeline or --run_inference must be true."
         raise click.UsageError(msg)
 
+    input_path = Path(data).expanduser()
+    input_is_directory = input_path.is_dir()
+    data = check_inputs(input_path)
+    requested_output_root = Path(out_dir).expanduser()
+    private_job_name = (
+        input_path.name
+        if input_is_directory
+        else target_name_from_path(input_path)
+    )
+    out_dir = requested_output_root / private_job_name
+    prediction_output_dir = requested_output_root if input_is_directory else out_dir
+    use_record_subdir = input_is_directory
+
     # Set rdkit pickle logic
     Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 
@@ -1355,15 +1415,8 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         else:
             click.echo("MSA server authentication: no credentials provided")
 
-    # Create one AF3-style job directory below the requested output root. The
-    # top-level YAML ``name`` takes precedence over the filename; generated
-    # ``*_data.yaml`` inputs persist that name so both stages share a directory.
-    data = Path(data).expanduser()
-    requested_output_root = Path(out_dir).expanduser()
-    input_is_directory = data.is_dir()
-    out_dir = requested_output_root / target_name_from_path(data)
-    prediction_output_dir = requested_output_root if input_is_directory else out_dir
-    use_record_subdir = input_is_directory
+    # Keep native processed/cache data in its historical job root. Public
+    # prepared inputs are written separately below requested_output_root.
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Download necessary data and model
@@ -1374,9 +1427,6 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     else:
         msg = f"Model {model} not supported. Supported: boltz1, boltz2."
         raise ValueError(f"Model {model} not supported.")
-
-    # Validate inputs
-    data = check_inputs(data)
 
     # Check method
     if method is not None:
@@ -1405,11 +1455,12 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             msa_server_password=msa_server_password,
             api_key_header=api_key_header,
             api_key_value=api_key_value,
+            prepared_output_root=requested_output_root,
         )
         return
 
     # Inference-only runs rebuild all derived features from the current
-    # ``*_data.yaml`` and its referenced MSA/template inputs. Keep those
+    # ``*_data.json`` and its referenced MSA/template inputs. Keep those
     # artifacts private to this process so concurrent seeds never share CSV,
     # NPZ, record, manifest, or Lightning log files. TemporaryDirectory uses
     # the system TMPDIR on ordinary servers; Slurm jobs prefer SLURM_TMPDIR.
@@ -1443,6 +1494,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         boltz2=model == "boltz2",
         preprocessing_threads=preprocessing_threads,
         max_msa_seqs=max_msa_seqs,
+        prepared_output_root=requested_output_root,
     )
 
     # Load manifest

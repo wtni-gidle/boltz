@@ -4,7 +4,7 @@ from pathlib import Path
 from Bio import SeqIO
 from rdkit.Chem.rdchem import Mol
 
-from boltz.data.parse.yaml import parse_boltz_schema
+from boltz.data.parse.schema import parse_boltz_schema
 from boltz.data.types import Target
 
 

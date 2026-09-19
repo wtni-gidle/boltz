@@ -402,8 +402,8 @@ def test_wrapper_rejects_pdb_output(tmp_path: Path) -> None:
 
     from boltz.main import cli
 
-    source = tmp_path / "target.yaml"
-    source.write_text("sequences: []\n", encoding="utf-8")
+    source = tmp_path / "target.json"
+    source.write_text('{"sequences": []}\n', encoding="utf-8")
     result = CliRunner().invoke(
         cli,
         ["predict", str(source), "--output_format", "pdb"],

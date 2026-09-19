@@ -45,7 +45,7 @@ You can run inference using Boltz with:
 boltz predict input_path --use_msa_server
 ```
 
-`input_path` should point to a YAML file, or a directory of YAML files for batched processing, describing the biomolecules you want to model and the properties you want to predict (e.g. affinity). To see all available options: `boltz predict --help` and for more information on these input formats, see our [prediction instructions](docs/prediction.md). By default, the `boltz` command will run the latest version of the model.
+`input_path` should point to a JSON file, or a directory of JSON input files for batched processing, describing the biomolecules you want to model and the properties you want to predict (e.g. affinity). The EnsembleFold staged wrapper accepts JSON only, not YAML or FASTA; it retains Boltz's own input fields. For example, use `boltz predict examples/prot.json --use_msa_server`. To see all available options: `boltz predict --help`; see the [prediction instructions](docs/prediction.md) for the input contract and two-stage workflow. By default, the `boltz` command uses the provided Boltz-2 model.
 
 
 ### Binding Affinity Prediction

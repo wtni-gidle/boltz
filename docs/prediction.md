@@ -4,67 +4,49 @@ Once `boltz` is installed, you can run predictions with:
 
 `boltz predict <INPUT_PATH> [OPTIONS]`
 
-* `<INPUT_PATH>` can be either a single .yaml or .fasta file (YAML is preferred; FASTA is deprecated), or a directory, in which case predictions will be run on all `.yaml` and `.fasta` files inside.
+* `<INPUT_PATH>` is a single `.json` file or a directory of JSON input files. The staged wrapper accepts JSON only: YAML and FASTA inputs are rejected, including YAML content merely renamed to `.json`.
 * If you include `--use_msa_server`, the MSA will be generated automatically via the mmseqs2 server. Without this flag, you must provide a pre-computed MSA.
 * If you include `--use_potentials`, Boltz will apply inference-time potentials to improve the physical plausibility of the predicted poses.
 * By default, Boltz runs structure and affinity prediction even if matching output files already exist. Add `--skip` to skip a seed only when all required model, summary confidence, and pLDDT files are present. The check does not validate the MSA, templates, constraints, checkpoint, or inference parameters, so use a separate output directory for different experimental conditions.
-* The optional top-level YAML `name` defines the target/record ID, generated `_data.yaml` filename, and MSA prefix. For the usual single-YAML invocation it also names the job directory. If omitted, the input filename stem is used for backward compatibility. A name must be a non-empty, single filename component. A directory input remains one multi-record job whose outer directory is named after the input directory.
-* `-D true -P false` runs only the MSA data pipeline and writes `<out_dir>/<name>/<name>_data.yaml` plus separate paired/unpaired A3M files. `-D false -P true` accepts that generated YAML directly, creates the native keyed CSV at runtime, and runs preprocessing and inference. At least one stage must be enabled.
+* The optional top-level JSON `name` defines the target/record ID, generated `_data.json` filename, job directory, and MSA prefix. If omitted, the input filename stem is used (with `_data` removed for a prepared filename). A name must be a non-empty, single filename component. Prepared JSON always saves the resolved name, so renaming the file does not change the task identity. Duplicate task names in a batch are rejected before preparation.
+* `-D true -P false` runs only the MSA data pipeline and writes `<out_dir>/<name>/<name>_data.json` plus separate paired/unpaired A3M files. `-D false -P true` accepts that generated JSON directly, creates the native keyed CSV at runtime, and runs preprocessing and inference. Directory inputs also write one prepared bundle per task, without an extra input-directory-name layer. At least one stage must be enabled.
 * `--seeds 42` runs one seed, while `--seeds 40,41,42` runs several seeds sequentially in one process while sharing preprocessing and checkpoint loading. When omitted, one concrete seed is generated and printed.
 
 
 ## Input format
 
-Boltz takes inputs in `.yaml` format, which specifies the components of the complex.  
-Below is the full schema (each section is described in detail afterward):
+Boltz takes a JSON object describing the complex, using Boltz's own schema, not AF3's schema.
+Relative MSA and template paths are resolved from the declaring JSON's directory, not the shell's working directory.
+Prepared output rebases these references; it does not promise to copy every external resource.
+Old YAML inputs must be converted to valid JSON; there is no automatic compatibility reader or migration command.
 
-```yaml
-name: TARGET_NAME
-sequences:
-    - ENTITY_TYPE:
-        id: CHAIN_ID 
-        sequence: SEQUENCE      # only for protein, dna, rna
-        smiles: 'SMILES'        # only for ligand, exclusive with ccd
-        ccd: CCD                # only for ligand, exclusive with smiles
-        msa: MSA_PATH           # only for protein
-        modifications:
-          - position: RES_IDX   # index of residue, starting from 1
-            ccd: CCD            # CCD code of the modified residue
-        cyclic: false
-    - ENTITY_TYPE:
-        id: [CHAIN_ID, CHAIN_ID]    # multiple ids in case of multiple identical entities
-        ...
-constraints:
-    - bond:
-        atom1: [CHAIN_ID, RES_IDX, ATOM_NAME]
-        atom2: [CHAIN_ID, RES_IDX, ATOM_NAME]
-    - pocket:
-        binder: CHAIN_ID
-        contacts: [[CHAIN_ID, RES_IDX/ATOM_NAME], [CHAIN_ID, RES_IDX/ATOM_NAME]]
-        max_distance: DIST_ANGSTROM
-        force: false # if force is set to true (default is false), a potential will be used to enforce the pocket constraint
-    - contact:
-        token1: [CHAIN_ID, RES_IDX/ATOM_NAME]
-        token2: [CHAIN_ID, RES_IDX/ATOM_NAME]
-        max_distance: DIST_ANGSTROM
-        force: false # if force is set to true (default is false), a potential will be used to enforce the contact constraint
+The following JSON-syntax illustration shows the supported sections. Replace the illustrative sequences, paths, CCD/atom identifiers and residue indices with those for your own system; optional sections may be omitted.
 
-templates:
-    - cif: CIF_PATH  # if only a path is provided, Boltz will find the best matchings
-      force: true # optional, if force is set to true (default is false), a potential will be used to enforce the template
-      threshold: DISTANCE_THRESHOLD # optional, controls the distance (in Angstroms) that the prediction can deviate from the template
-    - cif: CIF_PATH
-      chain_id: CHAIN_ID   # optional, specify which chain to find a template for
-    - cif: CIF_PATH
-      chain_id: [CHAIN_ID, CHAIN_ID]  # can be more than one
-      template_id: [TEMPLATE_CHAIN_ID, TEMPLATE_CHAIN_ID]
-    - pdb: PDB_PATH # if a pdb path is provided, Boltz will incrementally assign template chain ids based on the chain names in the PDB file (A1, A2, B1, etc)
-      chain_id: [CHAIN_ID, CHAIN_ID]
-      template_id: [TEMPLATE_CHAIN_ID, TEMPLATE_CHAIN_ID]
-properties:
-    - affinity:
-        binder: CHAIN_ID
-
+```json
+{
+  "name": "TARGET_NAME",
+  "version": 1,
+  "sequences": [
+    {"protein": {
+      "id": ["A", "B"], "sequence": "MCDE", "msa": "msa/protein.csv",
+      "modifications": [{"position": 1, "ccd": "MSE"}], "cyclic": false
+    }},
+    {"ligand": {"id": "C", "ccd": "SAH"}},
+    {"ligand": {"id": "D", "smiles": "CCO"}}
+  ],
+  "constraints": [
+    {"bond": {"atom1": ["A", 2, "SG"], "atom2": ["B", 2, "SG"]}},
+    {"pocket": {"binder": "C", "contacts": [["A", 2]], "max_distance": 6, "force": false}},
+    {"contact": {"token1": ["A", 3], "token2": ["B", 3], "max_distance": 6, "force": false}}
+  ],
+  "templates": [
+    {"cif": "template.cif", "force": true, "threshold": 2},
+    {"cif": "template.cif", "chain_id": "A"},
+    {"cif": "template.cif", "chain_id": ["A", "B"], "template_id": ["X", "Y"]},
+    {"pdb": "template.pdb", "chain_id": ["A", "B"], "template_id": ["A1", "B1"]}
+  ],
+  "properties": [{"affinity": {"binder": "D"}}]
+}
 ```
 
 ### Sequences and molecules
@@ -72,15 +54,15 @@ properties:
 The sequences section has one entry per unique chain or molecule.
 * Polymers: use `ENTITY_TYPE` equals to `protein`, `dna`, or `rna`, and provide a `sequence`.
 * Ligands (non-polymers): use `ENTITY_TYPE` equals `ligand`, and provide either a `smiles` string or a `ccd` code (but not both).
-* `CHAIN_ID`: unique identifier for each chain/molecule. If multiple identical entities exist, set id as a list (e.g. `[A, B]`).
+* `CHAIN_ID`: unique identifier for each chain/molecule. If multiple identical entities exist, set id as a list (e.g. `["A", "B"]`).
 
 For proteins:
 * By default, an `msa` must be provided.
 * If `--use_msa_server` is set, the MSA is auto-generated (so `msa` can be omitted).
-* To use a precomputed custom MSA, set `msa: MSA_PATH` pointing to a `.a3m` file. If you have more than one protein chain, use a CSV format instead of a3m with two columns: `sequence` (protein sequence) and `key` (a unique identifier for matching rows across chains). Sequences with the same key are mutually aligned.
-* To force single-sequence mode (not recommended, as it reduces accuracy), set `msa: empty`.
-* A generated `*_data.yaml` represents an automatically searched MSA as `msa: {paired: PATH, unpaired: PATH}`. This mapping is a wrapper extension intended as the data-pipeline/inference hand-off. The normal scalar `msa: PATH` form remains supported.
-* Prepared MSA filenames use the first chain ID of each deduplicated protein entry and are written as zstd streams by default. For example, `id: [A, B]` produces `<name>_A_paired.a3m.zst` and `<name>_A_unpaired.a3m.zst`, which are shared by both chains.
+* To use a precomputed custom MSA, set `"msa": "MSA_PATH"` pointing to a `.a3m` file. If you have more than one protein chain, use a CSV format instead of a3m with two columns: `sequence` (protein sequence) and `key` (a unique identifier for matching rows across chains). Sequences with the same key are mutually aligned.
+* To force single-sequence mode (not recommended, as it reduces accuracy), set `"msa": "empty"`.
+* A generated `*_data.json` represents an automatically searched MSA as `"msa": {"paired": "PATH", "unpaired": "PATH"}`. This mapping is a wrapper extension intended as the data-pipeline/inference hand-off. The normal scalar `"msa": "PATH"` form remains supported.
+* Prepared MSA filenames use the first chain ID of each deduplicated protein entry and are written as zstd streams by default. For example, `"id": ["A", "B"]` produces `<name>_A_paired.a3m.zst` and `<name>_A_unpaired.a3m.zst`, which are shared by both chains.
 * Prepared A3M paths may contain plain text, gzip, xz, or zstd data. Compression is detected from magic bytes rather than the filename, so both a real compressed `.a3m.zst` and a plain-text file carrying that suffix are handled correctly.
 
 The `modifications` field is optional and allows specification of modified residues in polymers (`protein`, `dna`, or `rna`).  
@@ -103,7 +85,7 @@ The `cyclic` flag indicates whether a polymer chain (not ligands) is cyclic.
 ### Templates
 `templates` is optional and allows specification of structural templates for protein chains. At minimum, provide the path to a CIF or PDB file.
 
-If you wish to explicitly define which of the chains in your YAML should be templated using this file, you can use the `chain_id` entry to specify them. If providing a PDB file, chain ids will be incrementally assigned to each subchain in a parent PDB chain resulting in template chain ids of A1, A2, B1, etc for PDB chains A and B. Make sure to look at the structure of the template PDB file to determine the corresponding value of `template_id` to provide. Whether a set of ids is provided or not, Boltz will find the best matching chains from the provided template. If you wish to explicitly define the mapping yourself, you may provide the corresponding `template_id`. 
+If you wish to explicitly define which of the chains in your JSON should be templated using this file, you can use the `chain_id` entry to specify them. If providing a PDB file, chain ids will be incrementally assigned to each subchain in a parent PDB chain resulting in template chain ids of A1, A2, B1, etc for PDB chains A and B. Make sure to look at the structure of the template PDB file to determine the corresponding value of `template_id` to provide. Whether a set of ids is provided or not, Boltz will find the best matching chains from the provided template. If you wish to explicitly define the mapping yourself, you may provide the corresponding `template_id`.
 
 For any template you provide, you can also specify a `force` flag which will use a potential to enforce that the backbone does not deviate excessively from the template during the prediction. When using `force` one must specify also the `threshold` field which controls the distance (in Angstroms) that the prediction can deviate from the template. 
 
@@ -113,20 +95,46 @@ For any template you provide, you can also specify a `force` flag which will use
 
 ### Example
 
-```yaml
-name: example_complex
-version: 1
-sequences:
-  - protein:
-      id: [A, B]
-      sequence: MVTPEGNVSLVDESLLVGVTDEDRAVRSAHQFYERLIGLWAPAVMEAAHELGVFAALAEAPADSGELARRLDCDARAMRVLLDALYAYDVIDRIHDTNGFRYLLSAEARECLLPGTLFSLVGKFMHDINVAWPAWRNLAEVVRHGARDTSGAESPNGIAQEDYESLVGGINFWAPPIVTTLSRKLRASGRSGDATASVLDVGCGTGLYSQLLLREFPRWTATGLDVERIATLANAQALRLGVEERFATRAGDFWRGGWGTGYDLVLFANIFHLQTPASAVRLMRHAAACLAPDGLVAVVDQIVDADREPKTPQDRFALLFAASMTNTGGGDAYTFQEYEEWFTAAGLQRIETLDTPMHRILLARRATEPSAVPEGQASENLYFQ
-      msa: ./examples/msa/seq1.a3m
-  - ligand:
-      id: [C, D]
-      ccd: SAH
-  - ligand:
-      id: [E, F]
-      smiles: 'N[C@@H](Cc1ccc(O)cc1)C(=O)O'
+Save this example as `examples/example_complex.json` so its MSA path resolves
+to the provided `examples/msa/seq1.a3m`. Other ready-to-edit JSON inputs are in
+`examples/`; select individual files when that directory also contains resources
+and historical FASTA examples.
+
+```json
+{
+  "name": "example_complex",
+  "version": 1,
+  "sequences": [
+    {
+      "protein": {
+        "id": [
+          "A",
+          "B"
+        ],
+        "sequence": "MVTPEGNVSLVDESLLVGVTDEDRAVRSAHQFYERLIGLWAPAVMEAAHELGVFAALAEAPADSGELARRLDCDARAMRVLLDALYAYDVIDRIHDTNGFRYLLSAEARECLLPGTLFSLVGKFMHDINVAWPAWRNLAEVVRHGARDTSGAESPNGIAQEDYESLVGGINFWAPPIVTTLSRKLRASGRSGDATASVLDVGCGTGLYSQLLLREFPRWTATGLDVERIATLANAQALRLGVEERFATRAGDFWRGGWGTGYDLVLFANIFHLQTPASAVRLMRHAAACLAPDGLVAVVDQIVDADREPKTPQDRFALLFAASMTNTGGGDAYTFQEYEEWFTAAGLQRIETLDTPMHRILLARRATEPSAVPEGQASENLYFQ",
+        "msa": "msa/seq1.a3m"
+      }
+    },
+    {
+      "ligand": {
+        "id": [
+          "C",
+          "D"
+        ],
+        "ccd": "SAH"
+      }
+    },
+    {
+      "ligand": {
+        "id": [
+          "E",
+          "F"
+        ],
+        "smiles": "N[C@@H](Cc1ccc(O)cc1)C(=O)O"
+      }
+    }
+  ]
+}
 ```
 
 
@@ -184,14 +192,14 @@ Examples of common options include:
 
 ## Output
 
-For `target.yaml` and `--out_dir results`, job artifacts are organized below `results/target/`. A generated `target_data.yaml` maps back to the same target by removing the `_data` filename suffix.
+For `target.json` and `--out_dir results`, job artifacts are organized below `results/target/` unless an explicit `name` chooses another task identity. Generated `target_data.json` saves that name and can be renamed without changing the task.
 
 After a data-only run followed by inference-only, the persistent layout is:
 
 ```
 results/
 └── target/
-    ├── target_data.yaml
+    ├── target_data.json
     ├── msa/
     │   ├── target_A_paired.a3m.zst
     │   └── target_A_unpaired.a3m.zst
@@ -318,51 +326,12 @@ If both the CLI option and environment variable are set, the CLI option takes pr
 Only one authentication method (basic or API key) can be used at a time. If both are provided, the program will raise an error.
 
 
-## Fasta format (deprecated)
+## Legacy inputs
 
-FASTA format is still supported but is deprecated and only supports a limited subset of features compared to YAML.
-
-| Feature  | Fasta              | YAML    |
-| -------- |--------------------| ------- |
-| Polymers | :white_check_mark: | :white_check_mark:   |
-| Smiles   | :white_check_mark: | :white_check_mark:   |
-| CCD code | :white_check_mark: | :white_check_mark:   |
-| Custom MSA | :white_check_mark: | :white_check_mark:   |
-| Modified Residues | :x:                |  :white_check_mark: |
-| Covalent bonds | :x:                | :white_check_mark:   |
-| Pocket conditioning | :x:                | :white_check_mark:   |
-| Affinity | :x:                | :white_check_mark:   |
-
-
-It contain entries as follows:
-
-```
->CHAIN_ID|ENTITY_TYPE|MSA_PATH
-SEQUENCE
-```
-
-The `CHAIN_ID` is a unique identifier for each input chain. The `ENTITY_TYPE` can be one of `protein`, `dna`, `rna`, `smiles`, `ccd` (note that we support both smiles and CCD code for ligands). The `MSA_PATH` is only applicable to proteins. By default, MSA's are required, but they can be omited by passing the `--use_msa_server` flag which will auto-generate the MSA using the mmseqs2 server. If you wish to use a custom MSA, use it to set the path to the `.a3m` file containing a pre-computed MSA for this protein. If you wish to explicitly run single sequence mode (which is generally advised against as it will hurt model performance), you may do so by using the special keyword `empty` for that protein (ex: `>A|protein|empty`). For custom MSA, you may wish to indicate pairing keys to the model. You can do so by using a CSV format instead of a3m with two columns: `sequence` with the protein sequences and `key` which is a unique identifier indicating matching rows across CSV files of each protein chain.
-
-For each of these cases, the corresponding `SEQUENCE` will contain an amino acid sequence (e.g. `EFKEAFSLF`), a sequence of nucleotide bases (e.g. `ATCG`), a smiles string (e.g. `CC1=CC=CC=C1`), or a CCD code (e.g. `ATP`), depending on the entity.
-
-As an example:
-
-```yaml
->A|protein|./examples/msa/seq1.a3m
-MVTPEGNVSLVDESLLVGVTDEDRAVRSAHQFYERLIGLWAPAVMEAAHELGVFAALAEAPADSGELARRLDCDARAMRVLLDALYAYDVIDRIHDTNGFRYLLSAEARECLLPGTLFSLVGKFMHDINVAWPAWRNLAEVVRHGARDTSGAESPNGIAQEDYESLVGGINFWAPPIVTTLSRKLRASGRSGDATASVLDVGCGTGLYSQLLLREFPRWTATGLDVERIATLANAQALRLGVEERFATRAGDFWRGGWGTGYDLVLFANIFHLQTPASAVRLMRHAAACLAPDGLVAVVDQIVDADREPKTPQDRFALLFAASMTNTGGGDAYTFQEYEEWFTAAGLQRIETLDTPMHRILLARRATEPSAVPEGQASENLYFQ
->B|protein|./examples/msa/seq1.a3m
-MVTPEGNVSLVDESLLVGVTDEDRAVRSAHQFYERLIGLWAPAVMEAAHELGVFAALAEAPADSGELARRLDCDARAMRVLLDALYAYDVIDRIHDTNGFRYLLSAEARECLLPGTLFSLVGKFMHDINVAWPAWRNLAEVVRHGARDTSGAESPNGIAQEDYESLVGGINFWAPPIVTTLSRKLRASGRSGDATASVLDVGCGTGLYSQLLLREFPRWTATGLDVERIATLANAQALRLGVEERFATRAGDFWRGGWGTGYDLVLFANIFHLQTPASAVRLMRHAAACLAPDGLVAVVDQIVDADREPKTPQDRFALLFAASMTNTGGGDAYTFQEYEEWFTAAGLQRIETLDTPMHRILLARRATEPSAVPEGQASENLYFQ
->C|ccd
-SAH
->D|ccd
-SAH
->E|smiles
-N[C@@H](Cc1ccc(O)cc1)C(=O)O
->F|smiles
-N[C@@H](Cc1ccc(O)cc1)C(=O)O
-```
-
-
+The staged wrapper no longer accepts YAML or FASTA. Native standalone FASTA
+parser code and historical `.fasta` examples remain for reference, not as
+supported `boltz predict` inputs. Use the JSON examples instead. Runtime/training
+configuration YAML is unrelated and remains unchanged.
 
 ## Troubleshooting
 
