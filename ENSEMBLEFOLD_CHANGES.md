@@ -1,5 +1,85 @@
 # EnsembleFold wrapper changes
 
+## Current wrapper contract — 2026-09-20 implementation
+
+This section supersedes the historical notes below. The five targeted wrapper
+test files passed on stat CPU (99 tests, job 89685); full six-method native-equivalence acceptance is deferred. No new
+commit or deployment is implied by this document.
+
+- Molecule inputs are **JSON only**, with optional top-level `name`. YAML/FASTA
+  molecule inputs are rejected. Runtime configuration formats are unaffected.
+- `-D/--run_data_pipeline` and `-P/--run_inference` select stages.
+  `--write_input_json true|false` (shell `-J`) independently controls prepared
+  JSON persistence. When omitted it follows `-D` for compatibility. True updates
+  an existing `<name>_data.json`; false neither creates nor modifies it.
+- All inference invocations rebuild derived features from the specified JSON
+  and current referenced resources. No existing processed record is authoritative.
+  Disabling data forbids new MSA searches, not interpretation of supplied templates.
+- `processed/`, keyed CSV, search working files, template conversion files,
+  Lightning internal files, and affinity handoffs belong in private temporary
+  directories. Cleanup follows the full invocation, including failures handled
+  by Python. SIGKILL/power loss still needs scheduler/OS scratch reclamation.
+  Prefer valid `SLURM_TMPDIR`, then standard `TMPDIR`/system scratch. Launch one
+  entry process; external multi-rank launch is rejected before work. The existing
+  `--devices` local fork route remains, but GPU execution is not tested this round.
+- Public results are directly under `<output>/<name>/{models,summary_confidences,full_data}`;
+  optional embeddings and affinity results remain public. Structure output is CIF.
+  Shared weights/CCD resources and reusable data artifacts are not scratch files.
+- Auto MSA resources use `msas/<name>__<first-chain>_pairedmsa.a3m.zst` and
+  `_unpairedmsa.a3m.zst`; native paired row keys, limits and CSV conversion remain.
+  Replace unpaired without replacing paired or templates.
+- `--skip` checks required files for existence and nonzero size only. If affinity
+  is requested, its final JSON is also required. A missing result reruns the whole
+  seed, including structure samples and affinity; an old handoff NPZ does not count.
+
+### Template input
+
+No `templates` (or `[]`) means no templates, with no automatic template search.
+Legacy Boltz JSON template entries with `cif`/`pdb`, `chain_id`, `template_id`
+remain valid. `template_id` in that legacy syntax means template chain ID.
+
+The new grouped format uses this template-field fragment:
+
+```json
+{"templates": [{"groupId": "complex_0", "chains": [
+  {"queryChain": "A", "mmcifPath": "complex.cif", "templateChain": "X",
+   "queryIndices": [0, 2], "templateIndices": [1, 3]},
+  {"queryChain": "B", "mmcifPath": "complex.cif", "templateChain": "Y"}
+], "force": false}]}
+```
+
+`templateChain` uses the native Boltz **label_asym_id**, not author chain numbering.
+It may be omitted only when the CIF has one protein chain. Paths are relative to
+the input JSON. Omit BOTH index lists for native automatic mapping, including in
+inference-only runs; provide both to use exactly those pairs, without realignment.
+Explicit empty lists mean no pairs. Invalid lists fail, rather than trigger fallback.
+Indices are 0-based positions in the full query/template polymer sequences, including
+unresolved positions; absent coordinates retain their native masks.
+
+Each group declares a common coordinate frame. Members can reference different
+single-chain CIFs, but must not be independently centered or rotated. Separate,
+unrelated templates belong to different groups. Native `force`/`threshold` apply
+to the group. Do not mix legacy and grouped entries in a single templates list.
+
+When prepared JSON is requested, selected template chains are exported as
+`msas/<name>__<query-chain>_template_<i>.cif.zst`, with group identity and explicit
+residue pairs. Default pairs follow the native **actual feature consumer's offset**,
+not an assumed truncation at the local alignment end. Export/readback token
+coordinates and masks are checked; a persistence failure is reported, never used
+to silently drop a template. With writing disabled, mappings remain runtime-only.
+All resources are staged before publication; caught publication errors restore
+previous resources. If rollback itself fails, recovery backups are retained and
+reported. This is not a concurrent-reader snapshot transaction: use one writer per
+target bundle, and disable input writing for parallel seed prediction. Data-only
+with writing disabled still persists searched MSA resources, but not a data JSON.
+
+Network architecture, checkpoint and diffusion code are unchanged. Template feature
+selection is deliberately extended to honor arbitrary explicit residue pairs and
+groups spanning multiple files; it is no longer accurate to claim all featurization
+code is untouched. Full native-equivalence acceptance remains pending.
+
+## Historical implementation notes (superseded where different above)
+
 This branch is based on upstream commit
 `b1ebfc46ecf57f5414e0d1a6f9027bbb122c53bc` and changes pipeline orchestration and
 prediction I/O. Model architecture, checkpoints, featurization, and diffusion sampling

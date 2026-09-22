@@ -20,6 +20,7 @@ usage() {
     echo "-d <gpu_device>                 CUDA device IDs, for example 0 or 0,1. (default: 0)"
     echo "-D <run_data_pipeline>          Run the data pipeline. (default: true)"
     echo "-P <run_inference>              Run model inference. (default: true)"
+    echo "-J <write_input_json>           Write/update prepared JSON. (default: same as -D)"
     echo "-r <model_seeds>                One seed or comma-separated seeds, e.g. 1,2,3."
     echo "-n <diffusion_samples>          Number of samples per seed. (default: 1)"
     echo "-c <recycling_steps>            Number of recycling steps. (default: 3)"
@@ -39,13 +40,14 @@ usage() {
 }
 
 # region: Parse command line arguments
-while getopts "i:o:d:D:P:r:n:c:p:m:M:S:h" opt; do
+while getopts "i:o:d:D:P:J:r:n:c:p:m:M:S:h" opt; do
     case "${opt}" in
     i) input_path=$OPTARG ;;
     o) output_dir=$OPTARG ;;
     d) gpu_device=$OPTARG ;;
     D) run_data_pipeline=$OPTARG ;;
     P) run_inference=$OPTARG ;;
+    J) write_input_json=$OPTARG ;;
     r) model_seeds=$OPTARG ;;
     n) diffusion_samples=$OPTARG ;;
     c) recycling_steps=$OPTARG ;;
@@ -74,6 +76,7 @@ fi
 if [[ "$gpu_device" == "" ]]; then gpu_device="0"; fi
 if [[ "$run_data_pipeline" == "" ]]; then run_data_pipeline="true"; fi
 if [[ "$run_inference" == "" ]]; then run_inference="true"; fi
+if [[ "$write_input_json" == "" ]]; then write_input_json="$run_data_pipeline"; fi
 if [[ "$diffusion_samples" == "" ]]; then diffusion_samples="1"; fi
 if [[ "$recycling_steps" == "" ]]; then recycling_steps="3"; fi
 if [[ "$sampling_steps" == "" ]]; then sampling_steps="200"; fi
@@ -124,6 +127,7 @@ command_args=(
     --out_dir "$output_dir"
     --run_data_pipeline "$run_data_pipeline"
     --run_inference "$run_inference"
+    --write_input_json "$write_input_json"
     --devices "$devices"
     --recycling_steps "$recycling_steps"
     --sampling_steps "$sampling_steps"

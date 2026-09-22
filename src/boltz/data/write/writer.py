@@ -27,6 +27,7 @@ class BoltzWriter(BasePredictionWriter):
         boltz2: bool = False,
         write_embeddings: bool = False,
         use_record_subdir: bool = True,
+        affinity_output_dir: Path | None = None,
     ) -> None:
         """Initialize the writer.
 
@@ -43,6 +44,10 @@ class BoltzWriter(BasePredictionWriter):
 
         self.data_dir = Path(data_dir)
         self.output_dir = Path(output_dir)
+        self.affinity_output_dir = (
+            Path(affinity_output_dir) if affinity_output_dir is not None
+            else self.data_dir.parent / "affinity_handoff"
+        )
         self.seed = seed
         self.output_format = output_format
         self.failed = 0
@@ -192,7 +197,11 @@ class BoltzWriter(BasePredictionWriter):
                     np.savez_compressed(path, **asdict(new_structure))
 
                 if self.boltz2 and record.affinity and model_idx == best_model_idx:
-                    path = record_dir / f"pre_affinity_seed-{self.seed}.npz"
+                    handoff_dir = self.affinity_output_dir
+                    if self.use_record_subdir:
+                        handoff_dir = handoff_dir / record.id
+                    handoff_dir.mkdir(parents=True, exist_ok=True)
+                    path = handoff_dir / f"pre_affinity_seed-{self.seed}.npz"
                     np.savez_compressed(path, **asdict(new_structure))
                     np.array(atoms["coords"][:, None], dtype=Coords)
 

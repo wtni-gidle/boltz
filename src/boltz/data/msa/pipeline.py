@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import tempfile
 from typing import Optional
 
 from boltz.data import const
@@ -9,8 +11,8 @@ from boltz.data.parse.compression import open_maybe_compressed_text, write_zstd_
 def component_paths(msa_dir: Path, msa_id: str) -> tuple[Path, Path]:
     """Return the prepared paired and unpaired A3M paths for an entity."""
     return (
-        msa_dir / f"{msa_id}_paired.a3m.zst",
-        msa_dir / f"{msa_id}_unpaired.a3m.zst",
+        msa_dir / f"{msa_id}_pairedmsa.a3m.zst",
+        msa_dir / f"{msa_id}_unpairedmsa.a3m.zst",
     )
 
 
@@ -42,32 +44,36 @@ def search_msa_components(
     sequences = list(data.values())
     auth_headers = _auth_headers(api_key_header, api_key_value)
 
-    if len(data) > 1:
-        paired_msas = run_mmseqs2(
+    temp_base = os.environ.get("SLURM_TMPDIR")
+    if temp_base and not Path(temp_base).is_dir():
+        temp_base = None
+    with tempfile.TemporaryDirectory(prefix="boltz-search-", dir=temp_base) as scratch:
+        if len(data) > 1:
+            paired_msas = run_mmseqs2(
+                sequences,
+                Path(scratch) / "paired",
+                use_env=True,
+                use_pairing=True,
+                host_url=msa_server_url,
+                pairing_strategy=msa_pairing_strategy,
+                msa_server_username=msa_server_username,
+                msa_server_password=msa_server_password,
+                auth_headers=auth_headers,
+            )
+        else:
+            paired_msas = [""] * len(data)
+
+        unpaired_msas = run_mmseqs2(
             sequences,
-            msa_dir / f"{target_id}_paired_tmp",
+            Path(scratch) / "unpaired",
             use_env=True,
-            use_pairing=True,
+            use_pairing=False,
             host_url=msa_server_url,
             pairing_strategy=msa_pairing_strategy,
             msa_server_username=msa_server_username,
             msa_server_password=msa_server_password,
             auth_headers=auth_headers,
         )
-    else:
-        paired_msas = [""] * len(data)
-
-    unpaired_msas = run_mmseqs2(
-        sequences,
-        msa_dir / f"{target_id}_unpaired_tmp",
-        use_env=True,
-        use_pairing=False,
-        host_url=msa_server_url,
-        pairing_strategy=msa_pairing_strategy,
-        msa_server_username=msa_server_username,
-        msa_server_password=msa_server_password,
-        auth_headers=auth_headers,
-    )
 
     for index, msa_id in enumerate(data):
         paired_path, unpaired_path = component_paths(msa_dir, msa_id)

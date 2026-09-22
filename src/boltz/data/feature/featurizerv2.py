@@ -1792,13 +1792,14 @@ def process_template_features(
     template_features = []
     for template_id, (template_name, templates) in enumerate(name_to_templates.items()):
         row_tokens = []
-        template_structure = data.templates[template_name]
-        template_tokens = data.template_tokens[template_name]
-        tmpl_chain_name_to_asym_id = {}
-        for chain in template_structure.chains:
-            tmpl_chain_name_to_asym_id[chain["name"]] = chain["asym_id"]
 
         for template in templates:
+            structure_name = template.structure_name or template_name
+            template_structure = data.templates[structure_name]
+            template_tokens = data.template_tokens[structure_name]
+            tmpl_chain_name_to_asym_id = {
+                chain["name"]: chain["asym_id"] for chain in template_structure.chains
+            }
             offset = template.template_st - template.query_st
 
             # Get query and template tokens to map residues
@@ -1810,9 +1811,15 @@ def process_template_features(
             # Get the template tokens at the query residues
             chain_id = tmpl_chain_name_to_asym_id[template.template_chain]
             toks = template_tokens[template_tokens["asym_id"] == chain_id]
-            toks = [t for t in toks if t["res_idx"] - offset in q_indices]
+            if template.query_indices is None:
+                # Preserve the native consumer's overlap, including positions
+                # outside the reported local-alignment end coordinates.
+                residue_map = {int(t["res_idx"]): int(t["res_idx"]) - offset for t in toks}
+            else:
+                residue_map = dict(zip(template.template_indices, template.query_indices, strict=True))
+            toks = [t for t in toks if residue_map.get(int(t["res_idx"])) in q_indices]
             for t in toks:
-                q_idx = q_indices[t["res_idx"] - offset]
+                q_idx = q_indices[residue_map[int(t["res_idx"])]]
                 row_tokens.append(
                     {
                         "token": t,

@@ -99,8 +99,8 @@ def test_search_saves_separate_paired_and_unpaired_a3m(
         paired_path, unpaired_path = component_paths(tmp_path, msa_id)
         assert paired_path.is_file()
         assert unpaired_path.is_file()
-        assert paired_path.name.endswith("_paired.a3m.zst")
-        assert unpaired_path.name.endswith("_unpaired.a3m.zst")
+        assert paired_path.name.endswith("_pairedmsa.a3m.zst")
+        assert unpaired_path.name.endswith("_unpairedmsa.a3m.zst")
         assert paired_path.read_bytes().startswith(b"\x28\xb5\x2f\xfd")
         assert unpaired_path.read_bytes().startswith(b"\x28\xb5\x2f\xfd")
         assert not (tmp_path / f"{msa_id}.csv").exists()
@@ -131,12 +131,12 @@ def test_collect_auto_msas_uses_first_chain_name_for_each_entity(
 
     auto_msas = main_module.collect_auto_msas(target, tmp_path)
 
-    assert auto_msas == {"target_A": "AAAA", "target_D": "BBBB"}
+    assert auto_msas == {"target__A": "AAAA", "target__D": "BBBB"}
     assert [chain.msa_id for chain in chains] == [
-        tmp_path / "target_A.csv",
-        tmp_path / "target_A.csv",
-        tmp_path / "target_D.csv",
-        tmp_path / "target_D.csv",
+        tmp_path / "target__A.csv",
+        tmp_path / "target__A.csv",
+        tmp_path / "target__D.csv",
+        tmp_path / "target__D.csv",
     ]
 
 
@@ -285,7 +285,8 @@ def test_data_only_cli_stops_after_preparing_msas(
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
     assert calls[0]["use_msa_server"] is True
-    assert calls[0]["out_dir"] == tmp_path / "out" / "target"
+    assert calls[0]["out_dir"] != tmp_path / "out" / "target"
+    assert not calls[0]["out_dir"].exists()
     assert downloads == [False]
     assert "No seed provided" not in result.output
 
@@ -327,7 +328,8 @@ def test_data_only_cli_uses_top_level_name_for_job_directory(
     )
 
     assert result.exit_code == 0, result.output
-    assert calls[0]["out_dir"] == tmp_path / "out" / "json_job_name"
+    assert calls[0]["out_dir"] != tmp_path / "out" / "json_job_name"
+    assert not calls[0]["out_dir"].exists()
     assert calls[0]["prepared_output_root"] == tmp_path / "out"
 
 
@@ -406,7 +408,7 @@ def test_prepare_msa_inputs_writes_executable_json_without_csv(
                         }
                     }
                 ],
-                "templates": [{"cif": "template.cif", "force": False}],
+                "templates": [],
                 "constraints": [
                     {
                         "contact": {
@@ -420,8 +422,6 @@ def test_prepare_msa_inputs_writes_executable_json_without_csv(
             }
         )
     )
-    template_path = tmp_path / "template.cif"
-    template_path.write_text("template bytes")
     source_bytes = input_path.read_bytes()
     target = SimpleNamespace(record=SimpleNamespace(id="target"))
     monkeypatch.setattr(main_module, "load_canonicals", lambda _path: {})
@@ -433,7 +433,7 @@ def test_prepare_msa_inputs_writes_executable_json_without_csv(
     monkeypatch.setattr(
         main_module,
         "collect_auto_msas",
-        lambda *_args, **_kwargs: {"target_A": "AAAA"},
+        lambda *_args, **_kwargs: {"target__A": "AAAA"},
     )
 
     def fake_search(*, data, msa_dir, **_kwargs):
@@ -462,13 +462,11 @@ def test_prepare_msa_inputs_writes_executable_json_without_csv(
     prepared = json.loads(data_path.read_text())
     protein = prepared["sequences"][0]["protein"]
     assert protein["msa"] == {
-        "paired": "msa/target_A_paired.a3m.zst",
-        "unpaired": "msa/target_A_unpaired.a3m.zst",
+        "paired": "msas/target__A_pairedmsa.a3m.zst",
+        "unpaired": "msas/target__A_unpairedmsa.a3m.zst",
     }
     assert prepared["name"] == "target"
-    written_template = prepared["templates"][0]
-    assert written_template["force"] is False
-    assert (data_path.parent / written_template["cif"]).resolve() == template_path
+    assert prepared["templates"] == []
     assert prepared["constraints"][0]["contact"]["max_distance"] == 8
     assert prepared["properties"] == [{"affinity": {"binder": "A"}}]
     assert input_path.read_bytes() == source_bytes
@@ -501,7 +499,7 @@ def test_prepared_json_materializes_relative_msa_paths(tmp_path: Path) -> None:
 
     materialize_prepared_msas(data_path, schema)
 
-    csv_path = msa_dir / "target_0.csv"
+    csv_path = msa_dir / "target__entity_0.csv"
     assert csv_path.read_text().splitlines() == [
         "key,sequence",
         "-1,AAAA",
@@ -538,7 +536,7 @@ def test_prepared_json_materializes_msa_in_private_directory(tmp_path: Path) -> 
 
     materialize_prepared_msas(data_path, schema, output_dir=private_dir)
 
-    csv_path = private_dir / "target_0_paired.csv"
+    csv_path = private_dir / "target__entity_0.csv"
     assert csv_path.read_text().splitlines() == [
         "key,sequence",
         "-1,AAAA",
@@ -589,7 +587,7 @@ def test_parse_data_json_uses_original_target_name(
 
     assert parsed["name"] == "target"
     assert parsed["schema"]["sequences"][0]["protein"]["msa"] == str(
-        msa_dir / "target_0.csv"
+        msa_dir / "target__entity_0.csv"
     )
 
 
@@ -656,7 +654,7 @@ def test_native_parse_uses_absolute_private_csv_with_relative_output_dir(
         msa_materialization_dir=relative_runtime_dir,
     )
 
-    csv_path = (tmp_path / relative_runtime_dir / "job_A.csv").resolve()
+    csv_path = (tmp_path / relative_runtime_dir / "native_job__entity_0.csv").resolve()
     assert target.record.id == "native_job"
     assert Path(target.record.chains[0].msa_id) == csv_path
     assert csv_path.is_file()
@@ -898,8 +896,9 @@ def test_data_only_existing_prepared_msa_uses_clean_private_csv(
     prepared_path = output_root / "stable_job" / "stable_job_data.json"
     prepared = json.loads(prepared_path.read_text())
     msa = prepared["sequences"][0]["protein"]["msa"]
-    assert (prepared_path.parent / msa["paired"]).resolve() == paired
-    assert (prepared_path.parent / msa["unpaired"]).resolve() == unpaired
+    assert msa["paired"] == "msas/stable_job__A_pairedmsa.a3m.zst"
+    assert read_a3m_sequences(prepared_path.parent / msa["paired"]) == []
+    assert read_a3m_sequences(prepared_path.parent / msa["unpaired"]) == ["AAAA"]
     assert not list(source_msa_dir.glob("*.csv"))
     assert not list(output_root.rglob("*.csv"))
     assert not (tmp_path / "private").exists()
@@ -982,7 +981,7 @@ def test_combined_processing_writes_one_bundle_per_target(
     assert not list(private_root.rglob("*_data.json"))
 
 
-def test_renamed_prepared_json_resolves_resources_from_its_directory(
+def test_rebased_legacy_json_resolves_resources_from_its_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1030,9 +1029,14 @@ def test_renamed_prepared_json_resolves_resources_from_its_directory(
             }
         )
     )
-    target = SimpleNamespace(record=SimpleNamespace(id="stable_job"))
     prepared_dir = tmp_path / "out" / "stable_job"
-    prepared = main_module.write_data_json(source, prepared_dir, target, {})
+    # Exercise path rebasing independently of template export. Real grouped
+    # CIF export/readback is covered in test_prepared_templates.py.
+    prepared_dir.mkdir(parents=True)
+    prepared = prepared_dir / "stable_job_data.json"
+    schema = json.loads(source.read_text())
+    json_parser.rebase_schema_resource_paths(schema, source, prepared_dir)
+    prepared.write_text(json.dumps(schema))
     renamed = prepared.with_name("renamed.json")
     prepared.rename(renamed)
     parsed = {}

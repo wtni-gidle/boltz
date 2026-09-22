@@ -559,6 +559,10 @@ class TemplateInfo:
     template_en: int
     force: bool = False
     threshold: Optional[float] = float("inf")
+    query_indices: Optional[list[int]] = None
+    template_indices: Optional[list[int]] = None
+    # The group name controls visibility; each member may load a different CIF.
+    structure_name: Optional[str] = None
 
 
 @dataclass(frozen=True)

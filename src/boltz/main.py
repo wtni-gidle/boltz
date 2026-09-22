@@ -5,7 +5,6 @@ import pickle
 import platform
 import secrets
 import tarfile
-import tempfile
 import urllib.request
 import warnings
 from dataclasses import asdict, dataclass
@@ -34,9 +33,11 @@ from boltz.data.msa.pipeline import (
 )
 from boltz.data.parse.a3m import parse_a3m
 from boltz.data.parse.csv import parse_csv
+from boltz.data.parse.prepared_io import publish_bundle, temporary_directory
 from boltz.data.parse.json import (
     load_input_schema,
     parse_json,
+    persist_msa_resources,
     rebase_schema_resource_paths,
     target_name_from_path,
 )
@@ -435,23 +436,21 @@ def filter_inputs_structure(  # noqa: C901
                 required_paths.append(full_data_dir / f"pae_{basename}.npz")
             if write_full_pde:
                 required_paths.append(full_data_dir / f"pde_{basename}.npz")
-            if not all(path.is_file() for path in required_paths):
+            if not all(_nonempty_file(path) for path in required_paths):
                 return False
 
         if write_embeddings:
             embeddings_path = (
                 target_dir / "embeddings" / f"seed-{seed}_embeddings.npz"
             )
-            if not embeddings_path.is_file():
+            if not _nonempty_file(embeddings_path):
                 return False
 
-        # Affinity consumes a private structure selected by confidence. If the
-        # public affinity result is still missing, keep the structure record in
-        # the manifest when that hand-off file also needs to be regenerated.
+        # A requested affinity result is part of seed completion. Runtime
+        # hand-off files never count as results and need not survive a run.
         if record.affinity:
             affinity_path = target_dir / "affinity" / f"seed-{seed}_affinity.json"
-            handoff_path = target_dir / f"pre_affinity_seed-{seed}.npz"
-            if not affinity_path.is_file() and not handoff_path.is_file():
+            if not _nonempty_file(affinity_path):
                 return False
 
         return True
@@ -471,6 +470,14 @@ def filter_inputs_structure(  # noqa: C901
         click.echo(msg)
 
     return manifest
+
+
+def _nonempty_file(path: Path) -> bool:
+    """Completion checks never parse outputs or fingerprint inputs."""
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def filter_inputs_affinity(
@@ -509,11 +516,11 @@ def filter_inputs_affinity(
         r.id
         for r in manifest.records
         if r.affinity
-        and (
+        and _nonempty_file(
             outdir / (r.id if use_record_subdir else "")
             / "affinity"
             / f"seed-{seed}_affinity.json"
-        ).is_file()
+        )
     }
 
     # Remove complete records only when skip is explicitly requested.
@@ -620,7 +627,7 @@ def collect_auto_msas(target: Target, msa_dir: Path) -> dict[str, str]:
             entity_id = chain.entity_id
             msa_id = msa_id_by_entity.setdefault(
                 entity_id,
-                f"{target.record.id}_{chain.chain_name}",
+                f"{target.record.id}__{chain.chain_name}",
             )
             to_generate[msa_id] = target.sequences[entity_id]
             chain.msa_id = msa_dir / f"{msa_id}.csv"
@@ -634,6 +641,9 @@ def write_data_json(
     out_dir: Path,
     target: Target,
     auto_msas: dict[str, str],
+    ccd: Optional[dict] = None,
+    mol_dir: Optional[Path] = None,
+    auto_msa_dir: Optional[Path] = None,
 ) -> Path:
     """Write the post-data-pipeline Boltz JSON used for later inference."""
     if source_path.suffix.lower() != ".json":
@@ -647,7 +657,6 @@ def write_data_json(
     # Persist the resolved job name so the prepared JSON remains stable even
     # if it is renamed before an inference-only run.
     prepared_schema["name"] = target.record.id
-
     msa_id_by_sequence = {
         sequence: msa_id for msa_id, sequence in auto_msas.items()
     }
@@ -659,14 +668,27 @@ def write_data_json(
         msa_id = msa_id_by_sequence.get(sequence)
         if msa_id is None:
             continue
-        paired_path, unpaired_path = component_paths(out_dir / "msa", msa_id)
+        paired_path, unpaired_path = component_paths(
+            auto_msa_dir if auto_msa_dir is not None else out_dir / "msas", msa_id,
+        )
         protein["msa"] = {
-            "paired": str(paired_path.relative_to(out_dir)),
-            "unpaired": str(unpaired_path.relative_to(out_dir)),
+            "paired": str(paired_path.resolve()),
+            "unpaired": str(unpaired_path.resolve()),
         }
 
     data_path = out_dir / f"{target.record.id}_data.json"
-    data_path.write_text(json.dumps(prepared_schema, indent=2) + "\n")
+    # Validate the entire bundle before touching existing resources. Publish
+    # JSON last, rolling back resources if any replacement fails.
+    with temporary_directory("boltz-export-") as scratch:
+        stage = Path(scratch)
+        if prepared_schema.get("templates"):
+            from boltz.data.parse.prepared_templates import export_templates
+            if ccd is None or mol_dir is None:
+                raise ValueError("Template export needs ccd and mol_dir for round-trip validation")
+            prepared_schema["templates"] = export_templates(target, stage, ccd, mol_dir)
+        persist_msa_resources(prepared_schema, stage, source_dir=out_dir)
+        (stage / data_path.name).write_text(json.dumps(prepared_schema, indent=2) + "\n", encoding="utf-8")
+        publish_bundle(stage, out_dir, data_path.name)
     click.echo(f"Prepared Boltz input written to {data_path}")
     return data_path
 
@@ -693,7 +715,10 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
     structure_dir: Path,
     records_dir: Path,
     prepared_output_root: Path,
+    write_input_json: Optional[bool] = None,
 ) -> None:
+    if write_input_json is None:
+        write_input_json = run_data_pipeline
     try:
         target = parse_input_target(
             path,
@@ -706,7 +731,7 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
         # Get target id
         target_id = target.record.id
         prepared_dir = prepared_output_root / target_id
-        prepared_msa_dir = prepared_dir / "msa"
+        prepared_msa_dir = msa_dir / "search" / target_id
 
         # Resolve auto-MSA entities to runtime CSV paths.
         to_generate = collect_auto_msas(target, msa_dir)
@@ -748,14 +773,6 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
                 click.echo(f"Materializing prepared MSA files for {path}.")
                 materialize_msa_csvs(data=to_generate, msa_dir=msa_dir)
 
-        if run_data_pipeline:
-            write_data_json(
-                source_path=path,
-                out_dir=prepared_dir,
-                target=target,
-                auto_msas=to_generate,
-            )
-
         # Parse MSA data
         msas = sorted({c.msa_id for c in target.record.chains if c.msa_id != -1})
         msa_id_map = {}
@@ -769,24 +786,20 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
             # Dump processed MSA
             processed = processed_msa_dir / f"{target_id}_{msa_idx}.npz"
             msa_id_map[msa_id] = f"{target_id}_{msa_idx}"
-            if not processed.exists() or not run_data_pipeline:
-                # Parse A3M
-                if msa_path.suffix.lower() in {".a3m", ".gz", ".xz", ".zst"}:
-                    msa: MSA = parse_a3m(
-                        msa_path,
-                        taxonomy=None,
-                        max_seqs=max_msa_seqs,
-                    )
-                elif msa_path.suffix == ".csv":
-                    msa: MSA = parse_csv(msa_path, max_seqs=max_msa_seqs)
-                else:
-                    msg = (
-                        f"MSA file {msa_path} not supported, only a3m, "
-                        "a3m.gz, a3m.xz, a3m.zst, or csv."
-                    )
-                    raise RuntimeError(msg)  # noqa: TRY301
-
-                msa.dump(processed)
+            # Always rebuild from this invocation's input resources.
+            if msa_path.suffix.lower() in {".a3m", ".gz", ".xz", ".zst"}:
+                msa: MSA = parse_a3m(
+                    msa_path, taxonomy=None, max_seqs=max_msa_seqs,
+                )
+            elif msa_path.suffix == ".csv":
+                msa = parse_csv(msa_path, max_seqs=max_msa_seqs)
+            else:
+                msg = (
+                    f"MSA file {msa_path} not supported, only a3m, "
+                    "a3m.gz, a3m.xz, a3m.zst, or csv."
+                )
+                raise RuntimeError(msg)
+            msa.dump(processed)
 
         # Modify records to point to processed MSA
         for c in target.record.chains:
@@ -816,14 +829,20 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
         record_path = records_dir / f"{target.record.id}.json"
         target.record.dump(record_path)
 
+        # Runtime consumers have read all current resources before an optional
+        # in-place prepared export is allowed to replace any of them.
+        if write_input_json:
+            write_data_json(
+                source_path=path, out_dir=prepared_dir, target=target,
+                auto_msas=to_generate, ccd=ccd, mol_dir=mol_dir,
+                auto_msa_dir=prepared_msa_dir if run_data_pipeline else msa_dir,
+            )
+
     except Exception as e:  # noqa: BLE001
         import traceback
 
         traceback.print_exc()
-        if not run_data_pipeline:
-            msg = f"Failed to materialize prepared MSA input {path}."
-            raise RuntimeError(msg) from e
-        print(f"Failed to process {path}. Skipping. Error: {e}.")  # noqa: T201
+        raise RuntimeError(f"Failed to process input {path}: {e}") from e
 
 
 @rank_zero_only
@@ -836,6 +855,7 @@ def process_inputs(
     msa_pairing_strategy: str,
     max_msa_seqs: int = 8192,
     run_data_pipeline: bool = True,
+    write_input_json: Optional[bool] = None,
     use_msa_server: bool = False,
     msa_server_username: Optional[str] = None,
     msa_server_password: Optional[str] = None,
@@ -893,26 +913,6 @@ def process_inputs(
             "and API key authentication (--api_key_header/--api_key_value). Please use only one authentication method."
         )
 
-    # Check if records exist at output path
-    records_dir = out_dir / "processed" / "records"
-    if records_dir.exists() and run_data_pipeline:
-        # Load existing records
-        existing = [Record.load(p) for p in records_dir.glob("*.json")]
-        processed_ids = {record.id for record in existing}
-
-        # Filter to missing only
-        data = [d for d in data if target_name_from_path(d) not in processed_ids]
-
-        # Nothing to do, update the manifest and return
-        if data:
-            click.echo(
-                f"Found {len(existing)} existing processed inputs, skipping them."
-            )
-        else:
-            click.echo("All inputs are already processed.")
-            updated_manifest = Manifest(existing)
-            updated_manifest.dump(out_dir / "processed" / "manifest.json")
-
     # Create output directories
     msa_dir = out_dir / "msa"
     records_dir = out_dir / "processed" / "records"
@@ -961,6 +961,7 @@ def process_inputs(
         structure_dir=structure_dir,
         records_dir=records_dir,
         prepared_output_root=prepared_output_root,
+        write_input_json=write_input_json,
     )
 
     # Parse input data
@@ -976,9 +977,8 @@ def process_inputs(
 
     # Load all records and write manifest
     record_paths = list(records_dir.glob("*.json"))
-    if not run_data_pipeline:
-        requested_ids = {target_name_from_path(path) for path in data}
-        record_paths = [path for path in record_paths if path.stem in requested_ids]
+    requested_ids = {target_name_from_path(path) for path in data}
+    record_paths = [path for path in record_paths if path.stem in requested_ids]
     records = [Record.load(path) for path in record_paths]
     manifest = Manifest(records)
     manifest.dump(out_dir / "processed" / "manifest.json")
@@ -998,6 +998,7 @@ def prepare_msa_inputs(
     api_key_header: Optional[str] = None,
     api_key_value: Optional[str] = None,
     prepared_output_root: Optional[Path] = None,
+    write_input_json: bool = True,
 ) -> None:
     """Search MSAs and write executable per-target JSON inputs."""
     if prepared_output_root is None:
@@ -1008,7 +1009,7 @@ def prepare_msa_inputs(
         with ccd_path.open("rb") as file:
             ccd = pickle.load(file)  # noqa: S301
 
-    with tempfile.TemporaryDirectory(prefix="boltz-prepare-") as temp_dir:
+    with temporary_directory("boltz-prepare-") as temp_dir:
         private_msa_root = Path(temp_dir)
         for path in data:
             target = parse_input_target(
@@ -1021,7 +1022,7 @@ def prepare_msa_inputs(
                 ),
             )
             target_dir = prepared_output_root / target.record.id
-            msa_dir = target_dir / "msa"
+            msa_dir = private_msa_root / target.record.id / "search"
             msa_dir.mkdir(parents=True, exist_ok=True)
             to_generate = collect_auto_msas(target, msa_dir)
             if to_generate and not use_msa_server:
@@ -1047,12 +1048,15 @@ def prepare_msa_inputs(
                     api_key_value=api_key_value,
                 )
 
-            write_data_json(
-                source_path=path,
-                out_dir=target_dir,
-                target=target,
-                auto_msas=to_generate,
-            )
+            if write_input_json:
+                write_data_json(
+                    source_path=path,
+                    out_dir=target_dir,
+                    target=target,
+                    auto_msas=to_generate,
+                    ccd=ccd, mol_dir=mol_dir,
+                    auto_msa_dir=msa_dir,
+                )
 
 
 @click.group()
@@ -1306,11 +1310,16 @@ def cli() -> None:
     is_flag=True,
     help=" to dump the s and z embeddings into a npz file. Default is False.",
 )
+@click.option(
+    "--write_input_json", type=bool, default=None,
+    help="Write/update processed input JSON. Defaults to --run_data_pipeline.",
+)
 def predict(  # noqa: C901, PLR0915, PLR0912
     data: str,
     out_dir: str,
     run_data_pipeline: bool = True,
     run_inference: bool = True,
+    write_input_json: Optional[bool] = None,
     cache: str = "~/.boltz",
     checkpoint: Optional[str] = None,
     affinity_checkpoint: Optional[str] = None,
@@ -1348,9 +1357,18 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     write_embeddings: bool = False,
 ) -> None:
     """Run predictions with Boltz."""
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    slurm_tasks = int(os.environ.get("SLURM_NTASKS", "1")) if "SLURM_PROCID" in os.environ else 1
+    if max(world_size, slurm_tasks) > 1:
+        raise click.UsageError(
+            "Launch Boltz with one entry process; use --devices for local multi-GPU "
+            "prediction. External multi-rank launches cannot share this private workspace."
+        )
     if not run_data_pipeline and not run_inference:
         msg = "At least one of --run_data_pipeline or --run_inference must be true."
         raise click.UsageError(msg)
+    if write_input_json is None:
+        write_input_json = run_data_pipeline
 
     input_path = Path(data).expanduser()
     input_is_directory = input_path.is_dir()
@@ -1415,10 +1433,6 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         else:
             click.echo("MSA server authentication: no credentials provided")
 
-    # Keep native processed/cache data in its historical job root. Public
-    # prepared inputs are written separately below requested_output_root.
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     # Download necessary data and model
     if model == "boltz1":
         download_boltz1(cache, download_weights=run_inference)
@@ -1441,10 +1455,18 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     # Process inputs
     ccd_path = cache / "ccd.pkl"
     mol_dir = cache / "mols"
+    # The Click context closes on success and on exceptions. All consumers,
+    # including affinity and data-loader workers, share this invocation's
+    # private workspace until prediction has finished.
+    temporary_workspace = temporary_directory("boltz-runtime-")
+    click.get_current_context().call_on_close(temporary_workspace.cleanup)
+    processing_out_dir = Path(temporary_workspace.name)
+    affinity_work_dir = processing_out_dir / "affinity_handoff"
+    click.echo(f"Using process-private temporary directory: {processing_out_dir}")
     if run_data_pipeline and not run_inference:
         prepare_msa_inputs(
             data=data,
-            out_dir=out_dir,
+            out_dir=processing_out_dir,
             ccd_path=ccd_path,
             mol_dir=mol_dir,
             boltz2=model == "boltz2",
@@ -1456,27 +1478,9 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             api_key_header=api_key_header,
             api_key_value=api_key_value,
             prepared_output_root=requested_output_root,
+            write_input_json=write_input_json,
         )
         return
-
-    # Inference-only runs rebuild all derived features from the current
-    # ``*_data.json`` and its referenced MSA/template inputs. Keep those
-    # artifacts private to this process so concurrent seeds never share CSV,
-    # NPZ, record, manifest, or Lightning log files. TemporaryDirectory uses
-    # the system TMPDIR on ordinary servers; Slurm jobs prefer SLURM_TMPDIR.
-    temporary_workspace = None
-    processing_out_dir = out_dir
-    if run_inference and not run_data_pipeline:
-        slurm_tmp = os.environ.get("SLURM_TMPDIR")
-        temp_base = Path(slurm_tmp) if slurm_tmp else None
-        if temp_base is not None and not temp_base.is_dir():
-            temp_base = None
-        temporary_workspace = tempfile.TemporaryDirectory(
-            prefix=f"boltz-{out_dir.name}-",
-            dir=temp_base,
-        )
-        processing_out_dir = Path(temporary_workspace.name)
-        click.echo("Using process-private temporary preprocessing directory.")
 
     process_inputs(
         data=data,
@@ -1495,6 +1499,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         preprocessing_threads=preprocessing_threads,
         max_msa_seqs=max_msa_seqs,
         prepared_output_root=requested_output_root,
+        write_input_json=write_input_json,
     )
 
     # Load manifest
@@ -1636,6 +1641,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
                 write_embeddings=write_embeddings,
                 seed=current_seed,
                 use_record_subdir=use_record_subdir,
+                affinity_output_dir=affinity_work_dir,
             )
             if trainer is None:
                 trainer = Trainer(
@@ -1679,15 +1685,11 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     # Check if affinity predictions are needed
     if any(r.affinity for r in manifest.records):
         click.echo("\nPredicting property: affinity\n")
+        # Use the same pending seeds for BOTH stages. If either public stage
+        # is incomplete, regenerate structures and the affinity result.
         affinity_manifests = {
-            current_seed: filter_inputs_affinity(
-                manifest=manifest,
-                outdir=prediction_output_dir,
-                skip=skip,
-                seed=current_seed,
-                use_record_subdir=use_record_subdir,
-            )
-            for current_seed in prediction_seeds
+            current_seed: Manifest([r for r in pending.records if r.affinity])
+            for current_seed, pending in structure_manifests.items()
         }
         pending_affinity_seeds = [
             current_seed
@@ -1759,7 +1761,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
 
                 data_module = Boltz2InferenceDataModule(
                     manifest=manifest_filtered,
-                    target_dir=prediction_output_dir,
+                    target_dir=affinity_work_dir,
                     msa_dir=processed.msa_dir,
                     mol_dir=mol_dir,
                     num_workers=num_workers,

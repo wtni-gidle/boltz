@@ -89,7 +89,9 @@ def load_input(
     if record.templates and template_dir is not None:
         templates = {}
         for template_info in record.templates:
-            template_id = template_info.name
+            template_id = template_info.structure_name or template_info.name
+            if template_id in templates:
+                continue
             template_path = template_dir / f"{record.id}_{template_id}.npz"
             template = StructureV2.load(template_path)
             templates[template_id] = template

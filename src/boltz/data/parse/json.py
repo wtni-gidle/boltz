@@ -5,7 +5,8 @@ from typing import Mapping, Optional
 
 from rdkit.Chem.rdchem import Mol
 
-from boltz.data.msa.pipeline import materialize_msa_csv
+from boltz.data.msa.pipeline import component_paths, materialize_msa_csv
+from boltz.data.parse.compression import open_maybe_compressed_text, write_zstd_text
 from boltz.data.parse.schema import parse_boltz_schema
 from boltz.data.types import Target
 
@@ -113,6 +114,10 @@ def rebase_schema_resource_paths(
     for template in schema.get("templates", []):
         if not isinstance(template, dict):
             continue
+        for member in template.get("chains", []):
+            value = member.get("mmcifPath")
+            if _is_resource_reference(value):
+                member["mmcifPath"] = _relative_resource_reference(value, source_path, destination_dir)
         for key in ("cif", "pdb"):
             value = template.get(key)
             if _is_resource_reference(value):
@@ -136,6 +141,10 @@ def _resolve_schema_resource_paths(schema: dict, source_path: Path) -> None:
     for template in schema.get("templates", []):
         if not isinstance(template, dict):
             continue
+        for member in template.get("chains", []):
+            value = member.get("mmcifPath")
+            if _is_resource_reference(value):
+                member["mmcifPath"] = str(_resolve_path(value, source_path.parent))
         for key in ("cif", "pdb"):
             value = template.get(key)
             if _is_resource_reference(value):
@@ -175,11 +184,10 @@ def materialize_prepared_msas(
             raise ValueError(msg)
 
         if sequence not in csv_by_sequence:
-            paired_suffix = "_paired.a3m"
-            if paired_path.name.endswith(paired_suffix):
-                csv_name = paired_path.name.removesuffix(paired_suffix) + ".csv"
-            else:
-                csv_name = paired_path.with_suffix("").with_suffix(".csv").name
+            # Neither basenames from distinct directories nor entity indices
+            # from different targets may collide in a shared runtime root.
+            target_name = target_name_from_schema(path, schema)
+            csv_name = f"{target_name}__entity_{len(csv_by_sequence)}.csv"
             csv_path = (
                 output_dir / csv_name
                 if output_dir is not None
@@ -198,6 +206,69 @@ def materialize_prepared_msas(
         protein["msa"] = str(csv_by_sequence[sequence])
 
 
+def persist_msa_resources(schema: dict, output_dir: Path, source_dir: Optional[Path] = None) -> None:
+    """Copy reusable MSA resources, preserving native scalar A3M/CSV routes.
+
+    Paths in schema have already been rebased against output_dir. This is only
+    called when exporting input, never by inference's read/convert path.
+    """
+    source_dir = output_dir if source_dir is None else source_dir
+    by_sequence = {}
+    writes = []
+    for item in schema.get("sequences", []):
+        protein = item.get("protein")
+        if protein is None:
+            continue
+        msa = protein.get("msa")
+        if not isinstance(msa, dict) and not _is_scalar_msa_reference(msa):
+            continue
+        sequence = protein["sequence"]
+        if sequence in by_sequence:
+            protein["msa"] = by_sequence[sequence]
+            continue
+        chain = protein["id"]
+        if isinstance(chain, list):
+            chain = chain[0]
+        if not isinstance(chain, str) or any(char in chain for char in "/\\\0") or chain in (".", ".."):
+            raise ValueError(f"Unsafe MSA chain filename component: {chain!r}")
+        identifier = f"{schema['name']}__{chain}"
+        if isinstance(msa, dict):
+            paths = component_paths(output_dir / "msas", identifier)
+            sources = [_resolve_path(msa[key], source_dir) for key in ("paired", "unpaired")]
+            # Read both first, so updating the same bundle cannot clobber a
+            # resource before another component has read it.
+            contents = []
+            for source in sources:
+                with open_maybe_compressed_text(source) as handle:
+                    contents.append(handle.read())
+            for destination, content in zip(paths, contents, strict=True):
+                writes.append((destination, content))
+            prepared = {key: str(path.relative_to(output_dir)) for key, path in zip(("paired", "unpaired"), paths, strict=True)}
+        else:
+            source = _resolve_path(msa, source_dir)
+            if source.suffix.lower() == ".csv":
+                destination = output_dir / "msas" / f"{identifier}_msa.csv"
+                content = source.read_bytes()
+                writes.append((destination, content))
+            else:
+                destination = output_dir / "msas" / f"{identifier}_msa.a3m.zst"
+                with open_maybe_compressed_text(source) as handle:
+                    content = handle.read()
+                writes.append((destination, content))
+            prepared = str(destination.relative_to(output_dir))
+        protein["msa"] = prepared
+        by_sequence[sequence] = prepared
+
+    # Snapshot every source before publishing any destination. In-place bundle
+    # updates can swap paths between entities, not just paired/unpaired fields.
+    for destination, content in writes:
+        if isinstance(content, bytes):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+        else:
+            write_zstd_text(destination, content)
+
+
 def parse_json(
     path: Path,
     ccd: dict[str, Mol],
@@ -210,4 +281,7 @@ def parse_json(
     _resolve_schema_resource_paths(data, path)
     materialize_prepared_msas(path, data, output_dir=msa_materialization_dir)
     name = target_name_from_schema(path, data)
+    if any("chains" in item for item in data.get("templates", [])):
+        from boltz.data.parse.prepared_templates import parse_grouped_templates
+        return parse_grouped_templates(name, data, ccd, mol_dir, boltz2)
     return parse_boltz_schema(name, data, ccd, mol_dir, boltz2)
