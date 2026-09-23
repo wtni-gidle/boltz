@@ -140,7 +140,7 @@ def test_writer_uses_seed_sample_layout_and_preserves_full_data_files(
         boltz2=True,
         write_embeddings=True,
         use_record_subdir=False,
-    )
+    compress_full_confidence=True)
     writer.write_on_batch_end(
         None,
         None,
@@ -202,7 +202,7 @@ def test_writer_omits_optional_arrays_and_embeddings_when_absent(
         boltz2=True,
         write_embeddings=True,
         use_record_subdir=False,
-    )
+    compress_full_confidence=True)
     writer.write_on_batch_end(
         None,
         None,
@@ -241,7 +241,7 @@ def test_writer_keeps_records_separate(
         output_dir=str(output_dir),
         seed=3,
         boltz2=True,
-    )
+    compress_full_confidence=True)
 
     for record_id in ("target_a", "target_b"):
         record = _record(record_id)
@@ -283,7 +283,7 @@ def test_affinity_handoff_uses_best_confidence_sample(
         boltz2=True,
         use_record_subdir=False,
         affinity_output_dir=tmp_path / "private_affinity",
-    )
+    compress_full_confidence=True)
     writer.write_on_batch_end(
         None,
         None,
@@ -394,7 +394,7 @@ def test_skip_uses_direct_job_categories(tmp_path: Path) -> None:
         tmp_path,
         skip=True,
         seed=7,
-    )
+    compress_full_confidence=True)
 
     assert filtered.records == []
 
@@ -408,7 +408,7 @@ def test_wrapper_rejects_pdb_output(tmp_path: Path) -> None:
     source.write_text('{"sequences": []}\n', encoding="utf-8")
     result = CliRunner().invoke(
         cli,
-        ["predict", str(source), "--output_format", "pdb"],
+        ["predict", "--compress_full_confidence", "true", str(source), "--output_format", "pdb"],
     )
 
     assert result.exit_code == 2
@@ -432,7 +432,7 @@ def test_legacy_prediction_directory_does_not_complete_new_root(
         tmp_path,
         skip=True,
         seed=7,
-    )
+    compress_full_confidence=True)
 
     assert [item.id for item in filtered.records] == [record.id]
 
@@ -469,7 +469,7 @@ def test_structure_skip_is_seed_sample_and_record_specific(tmp_path: Path) -> No
         write_full_pae=True,
         write_full_pde=True,
         write_embeddings=True,
-    )
+    compress_full_confidence=True)
 
     assert [record.id for record in filtered.records] == [incomplete.id]
 
@@ -492,7 +492,7 @@ def test_structure_skip_honors_pdb_format(tmp_path: Path) -> None:
         skip=True,
         seed=19,
         output_format="pdb",
-    )
+    compress_full_confidence=True)
 
     assert not filtered.records
 
@@ -534,18 +534,18 @@ def test_structure_skip_regenerates_missing_affinity_handoff(tmp_path: Path) -> 
     )
     target_dir = tmp_path
 
-    filtered = filter_inputs_structure(manifest, tmp_path, skip=True, seed=29)
+    filtered = filter_inputs_structure(manifest, tmp_path, skip=True, seed=29, compress_full_confidence=True)
     assert [item.id for item in filtered.records] == [record.id]
 
     (target_dir / "pre_affinity_seed-29.npz").write_bytes(b"nonempty")
-    filtered = filter_inputs_structure(manifest, tmp_path, skip=True, seed=29)
+    filtered = filter_inputs_structure(manifest, tmp_path, skip=True, seed=29, compress_full_confidence=True)
     assert filtered.records
 
     (target_dir / "pre_affinity_seed-29.npz").unlink()
     affinity_dir = target_dir / "affinity"
     affinity_dir.mkdir()
     (affinity_dir / "seed-29_affinity.json").write_bytes(b"nonempty")
-    filtered = filter_inputs_structure(manifest, tmp_path, skip=True, seed=29)
+    filtered = filter_inputs_structure(manifest, tmp_path, skip=True, seed=29, compress_full_confidence=True)
     assert not filtered.records
 
 
@@ -560,7 +560,7 @@ def test_structure_predictions_run_again_without_skip(tmp_path: Path) -> None:
         use_record_subdir=False,
     )
 
-    filtered = filter_inputs_structure(manifest, tmp_path, seed=31)
+    filtered = filter_inputs_structure(manifest, tmp_path, seed=31, compress_full_confidence=True)
 
     assert [item.id for item in filtered.records] == [record.id]
 
@@ -585,17 +585,17 @@ def test_structure_skip_requires_nonempty_requested_files(tmp_path, artifact, st
     }
     options = dict(skip=True, diffusion_samples=2, write_full_pae=True,
                    write_full_pde=True, write_embeddings=True)
-    assert not filter_inputs_structure(manifest, tmp_path, seed=9, **options).records
+    assert not filter_inputs_structure(manifest, tmp_path, seed=9, **options, compress_full_confidence=True).records
     damaged = tmp_path / paths[artifact]
     damaged.unlink()
     if state == "empty":
         damaged.touch()
     elif state == "directory":
         damaged.mkdir()
-    assert not filter_inputs_structure(manifest, tmp_path, seed=7, **options).records
-    assert filter_inputs_structure(manifest, tmp_path, seed=9, **options).records == manifest.records
+    assert not filter_inputs_structure(manifest, tmp_path, seed=7, **options, compress_full_confidence=True).records
+    assert filter_inputs_structure(manifest, tmp_path, seed=9, **options, compress_full_confidence=True).records == manifest.records
     if artifact in ("pae", "pde", "embeddings"):
-        assert not filter_inputs_structure(manifest, tmp_path, seed=9, skip=True, diffusion_samples=2).records
+        assert not filter_inputs_structure(manifest, tmp_path, seed=9, skip=True, diffusion_samples=2, compress_full_confidence=True).records
 
 
 @pytest.mark.parametrize("damage", ["missing", "empty"])
@@ -638,7 +638,7 @@ def test_cli_reruns_all_samples_only_for_incomplete_seed(tmp_path, monkeypatch, 
     monkeypatch.setattr(main, "Boltz2InferenceDataModule", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr(main, "Trainer", Trainer)
     monkeypatch.setattr(main, "seed_everything", lambda *args: None)
-    arguments = ["predict", str(source), "--out_dir", str(output_root), "--cache", str(tmp_path / "cache"),
+    arguments = ["predict", "--compress_full_confidence", "true", str(source), "--out_dir", str(output_root), "--cache", str(tmp_path / "cache"),
                  "--seeds", "7,9", "--diffusion_samples", "2", "--sampling_steps", "17",
                  "--recycling_steps", "3", "--accelerator", "cpu", "--skip", "-D", "false", "-P", "true"]
     complete = CliRunner().invoke(main.cli, arguments)

@@ -206,13 +206,14 @@ def materialize_prepared_msas(
         protein["msa"] = str(csv_by_sequence[sequence])
 
 
-def persist_msa_resources(schema: dict, output_dir: Path, source_dir: Optional[Path] = None) -> None:
+def persist_msa_resources(schema: dict, output_dir: Path, source_dir: Optional[Path] = None, *, compress_fold_input: bool = False) -> None:
     """Copy reusable MSA resources, preserving native scalar A3M/CSV routes.
 
     Paths in schema have already been rebased against output_dir. This is only
     called when exporting input, never by inference's read/convert path.
     """
     source_dir = output_dir if source_dir is None else source_dir
+    suffix = ".zst" if compress_fold_input else ""
     by_sequence = {}
     writes = []
     for item in schema.get("sequences", []):
@@ -233,7 +234,7 @@ def persist_msa_resources(schema: dict, output_dir: Path, source_dir: Optional[P
             raise ValueError(f"Unsafe MSA chain filename component: {chain!r}")
         identifier = f"{schema['name']}__{chain}"
         if isinstance(msa, dict):
-            paths = component_paths(output_dir / "msas", identifier)
+            paths = tuple(output_dir / "msas" / f"{identifier}_{kind}msa.a3m{suffix}" for kind in ("paired", "unpaired"))
             sources = [_resolve_path(msa[key], source_dir) for key in ("paired", "unpaired")]
             # Read both first, so updating the same bundle cannot clobber a
             # resource before another component has read it.
@@ -246,12 +247,13 @@ def persist_msa_resources(schema: dict, output_dir: Path, source_dir: Optional[P
             prepared = {key: str(path.relative_to(output_dir)) for key, path in zip(("paired", "unpaired"), paths, strict=True)}
         else:
             source = _resolve_path(msa, source_dir)
-            if source.suffix.lower() == ".csv":
-                destination = output_dir / "msas" / f"{identifier}_msa.csv"
-                content = source.read_bytes()
+            if source.name.lower().endswith((".csv", ".csv.zst")):
+                destination = output_dir / "msas" / f"{identifier}_msa.csv{suffix}"
+                with open_maybe_compressed_text(source) as handle:
+                    content = handle.read()
                 writes.append((destination, content))
             else:
-                destination = output_dir / "msas" / f"{identifier}_msa.a3m.zst"
+                destination = output_dir / "msas" / f"{identifier}_msa.a3m{suffix}"
                 with open_maybe_compressed_text(source) as handle:
                     content = handle.read()
                 writes.append((destination, content))
@@ -266,7 +268,7 @@ def persist_msa_resources(schema: dict, output_dir: Path, source_dir: Optional[P
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(content)
         else:
-            write_zstd_text(destination, content)
+            write_zstd_text(destination, content, compress=compress_fold_input)
 
 
 def parse_json(

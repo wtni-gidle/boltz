@@ -456,7 +456,7 @@ def test_prepare_msa_inputs_writes_executable_json_without_csv(
         use_msa_server=True,
         msa_server_url="https://example.test",
         msa_pairing_strategy="greedy",
-    )
+    compress_fold_input=True)
 
     data_path = out_dir / "target" / "target_data.json"
     prepared = json.loads(data_path.read_text())
@@ -829,7 +829,7 @@ def test_data_only_directory_writes_one_bundle_per_target(
         use_msa_server=False,
         msa_server_url="https://example.test",
         msa_pairing_strategy="greedy",
-    )
+    compress_fold_input=True)
 
     assert json.loads(
         (output_root / "alpha" / "alpha_data.json").read_text()
@@ -891,7 +891,7 @@ def test_data_only_existing_prepared_msa_uses_clean_private_csv(
         use_msa_server=False,
         msa_server_url="https://example.test",
         msa_pairing_strategy="greedy",
-    )
+    compress_fold_input=True)
 
     prepared_path = output_root / "stable_job" / "stable_job_data.json"
     prepared = json.loads(prepared_path.read_text())
@@ -973,7 +973,7 @@ def test_combined_processing_writes_one_bundle_per_target(
             structure_dir=directories["structures"],
             records_dir=directories["records"],
             prepared_output_root=output_root,
-        )
+        compress_fold_input=True)
 
     for name in ("alpha", "beta"):
         prepared = output_root / name / f"{name}_data.json"

@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Literal
@@ -28,6 +30,7 @@ class BoltzWriter(BasePredictionWriter):
         write_embeddings: bool = False,
         use_record_subdir: bool = True,
         affinity_output_dir: Path | None = None,
+        compress_full_confidence: bool = False,
     ) -> None:
         """Initialize the writer.
 
@@ -49,12 +52,29 @@ class BoltzWriter(BasePredictionWriter):
             else self.data_dir.parent / "affinity_handoff"
         )
         self.seed = seed
+        self.compress_full_confidence = compress_full_confidence
         self.output_format = output_format
         self.failed = 0
         self.boltz2 = boltz2
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.write_embeddings = write_embeddings
         self.use_record_subdir = use_record_subdir
+
+    def _write_confidence(self, directory: Path, name: str, key: str, value: np.ndarray) -> None:
+        suffix = ".npz" if self.compress_full_confidence else ".json"
+        path = directory / (name + suffix)
+        descriptor, filename = tempfile.mkstemp(prefix=f".{path.name}.", dir=directory)
+        temporary = Path(filename)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                if self.compress_full_confidence:
+                    np.savez_compressed(handle, **{key: value})
+                else:
+                    handle.write(json.dumps({key: value.tolist()}).encode("utf-8"))
+            os.replace(temporary, path)
+            path.with_suffix(".json" if self.compress_full_confidence else ".npz").unlink(missing_ok=True)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def write_on_batch_end(
         self,
@@ -244,20 +264,17 @@ class BoltzWriter(BasePredictionWriter):
 
                     # Save plddt
                     plddt = prediction["plddt"][model_idx]
-                    path = full_data_dir / f"plddt_{outname}.npz"
-                    np.savez_compressed(path, plddt=plddt.cpu().numpy())
+                    self._write_confidence(full_data_dir, f"plddt_{outname}", "plddt", plddt.cpu().numpy())
 
                 # Save pae
                 if "pae" in prediction:
                     pae = prediction["pae"][model_idx]
-                    path = full_data_dir / f"pae_{outname}.npz"
-                    np.savez_compressed(path, pae=pae.cpu().numpy())
+                    self._write_confidence(full_data_dir, f"pae_{outname}", "pae", pae.cpu().numpy())
 
                 # Save pde
                 if "pde" in prediction:
                     pde = prediction["pde"][model_idx]
-                    path = full_data_dir / f"pde_{outname}.npz"
-                    np.savez_compressed(path, pde=pde.cpu().numpy())
+                    self._write_confidence(full_data_dir, f"pde_{outname}", "pde", pde.cpu().numpy())
 
             # Save embeddings
             if self.write_embeddings and "s" in prediction and "z" in prediction:

@@ -63,7 +63,7 @@ def _process(source, ccd, runtime, public, *, run_data=False, write_json=False, 
         msa_pairing_strategy="greedy", msa_server_username=None,
         msa_server_password=None, api_key_header=None, api_key_value=None,
         max_msa_seqs=128, prepared_output_root=public, **directories,
-    )
+    compress_fold_input=True)
     record = Record.load(directories["records_dir"] / "job.json")
     loaded = load_input(
         record, target_dir=directories["structure_dir"],
@@ -115,7 +115,7 @@ def test_same_path_unpaired_replacement_rebuilds_real_msa_and_preserves_template
     source = _source(tmp_path, template_cif)
     original = parse_json(source, alanine_ccd, tmp_path, True, tmp_path / "export-runtime")
     public = tmp_path / "public"
-    prepared = main.write_data_json(source, public / "job", original, {}, alanine_ccd, tmp_path)
+    prepared = main.write_data_json(source, public / "job", original, {}, alanine_ccd, tmp_path, compress_fold_input=True)
     schema = json.loads(prepared.read_text())
     resources = [item["protein"]["msa"] for item in schema["sequences"]]
     assert resources[0] == {
@@ -205,7 +205,7 @@ def test_auto_search_publication_obeys_write_control(
             mol_dir=tmp_path, boltz2=False, use_msa_server=True,
             msa_server_url="https://unused.invalid", msa_pairing_strategy="greedy",
             prepared_output_root=public, write_input_json=write_json,
-        )
+        compress_fold_input=True)
     else:
         loaded, _, _ = _process(
             source, alanine_ccd, tmp_path / "runtime", public,

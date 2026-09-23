@@ -102,7 +102,7 @@ def test_exported_template_is_single_chain_and_preserves_explicit_mapping(tmp_pa
         }]}],
     }))
     target = parse_json(source, alanine_ccd, tmp_path, True, tmp_path / "private")
-    destination = main.write_data_json(source, tmp_path / "out", target, {}, alanine_ccd, tmp_path)
+    destination = main.write_data_json(source, tmp_path / "out", target, {}, alanine_ccd, tmp_path, compress_fold_input=True)
     prepared = json.loads(destination.read_text())
     mapping = prepared["templates"][0]["chains"][0]
     assert mapping["queryIndices"] == [0, 2]
@@ -130,7 +130,7 @@ def test_existing_msas_are_copied_into_prepared_bundle(tmp_path, alanine_ccd):
     source = tmp_path / "job.json"
     source.write_text(json.dumps(schema))
     target = parse_json(source, alanine_ccd, tmp_path, True, tmp_path / "private")
-    destination = main.write_data_json(source, tmp_path / "out", target, {})
+    destination = main.write_data_json(source, tmp_path / "out", target, {}, compress_fold_input=True)
     msa = json.loads(destination.read_text())["sequences"][0]["protein"]["msa"]
     assert msa == {
         "paired": "msas/job__A_pairedmsa.a3m.zst",
@@ -156,7 +156,7 @@ def test_native_multichain_template_roundtrip_with_missing_residue(tmp_path, ala
         "templates": [{"cif": template_cif.name, "chain_id": ["A", "B"], "template_id": ["X", "Y"]}],
     }))
     original = parse_json(source, alanine_ccd, tmp_path, True, tmp_path / "private")
-    destination = main.write_data_json(source, tmp_path / "out", original, {}, alanine_ccd, tmp_path)
+    destination = main.write_data_json(source, tmp_path / "out", original, {}, alanine_ccd, tmp_path, compress_fold_input=True)
     # Renaming a prepared JSON must not change its task or resource resolution.
     renamed = destination.with_name("renamed.json")
     destination.rename(renamed)
@@ -196,7 +196,7 @@ def test_failed_export_preserves_existing_bundle(tmp_path, monkeypatch, alanine_
         raise ValueError("roundtrip fixture failure")
     monkeypatch.setattr(prepared_templates, "_read_cif", fail_read)
     with pytest.raises(ValueError, match="roundtrip fixture"):
-        main.write_data_json(source, output, target, {}, alanine_ccd, tmp_path)
+        main.write_data_json(source, output, target, {}, alanine_ccd, tmp_path, compress_fold_input=True)
     assert old_template.read_bytes() == b"previous template must survive"
     assert old_json.read_text() == '{"previous": true}'
 

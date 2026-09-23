@@ -9,10 +9,11 @@ from typing import TextIO
 import zstandard as zstd
 
 
-def write_zstd_text(path: Path, text: str) -> None:
-    """Write UTF-8 text as a zstd frame."""
+def write_zstd_text(path: Path, text: str, *, compress: bool = True) -> None:
+    """Write UTF-8 text, optionally as a zstd frame."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    compressed = zstd.ZstdCompressor().compress(text.encode("utf-8"))
+    data = text.encode("utf-8")
+    compressed = zstd.ZstdCompressor().compress(data) if compress else data
     path.write_bytes(compressed)
 
 

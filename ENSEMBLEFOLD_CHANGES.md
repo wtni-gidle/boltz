@@ -10,7 +10,7 @@ commit or deployment is implied by this document.
   molecule inputs are rejected. Runtime configuration formats are unaffected.
 - `-D/--run_data_pipeline` and `-P/--run_inference` select stages.
   `--write_input_json true|false` (shell `-J`) independently controls prepared
-  JSON persistence. When omitted it follows `-D` for compatibility. True updates
+  JSON persistence. When omitted it defaults to true, including inference-only and fully skipped runs. True updates
   an existing `<name>_data.json`; false neither creates nor modifies it.
 - All inference invocations rebuild derived features from the specified JSON
   and current referenced resources. No existing processed record is authoritative.
@@ -25,9 +25,20 @@ commit or deployment is implied by this document.
 - Public results are directly under `<output>/<name>/{models,summary_confidences,full_data}`;
   optional embeddings and affinity results remain public. Structure output is CIF.
   Shared weights/CCD resources and reusable data artifacts are not scratch files.
-- Auto MSA resources use `msas/<name>__<first-chain>_pairedmsa.a3m.zst` and
-  `_unpairedmsa.a3m.zst`; native paired row keys, limits and CSV conversion remain.
+- Auto MSA resources use `msas/<name>__<first-chain>_pairedmsa.a3m` and
+  `_unpairedmsa.a3m`; native paired row keys, limits and CSV conversion remain.
   Replace unpaired without replacing paired or templates.
+- `--compress_fold_input` / `--compress-fold-input` (shell `-z`) defaults to false;
+  true writes external MSA/template text as zstd. Scalar CSV remains CSV, including
+  `.csv.zst`; the wrapper decompresses that form into private scratch before the
+  native CSV reader, preserving keys and row order. Readers accept plain/zstd
+  independently of publication format.
+- `--compress_full_confidence` / `--compress-full-confidence` (shell `-f`) defaults
+  to false: pLDDT, PAE and PDE use separate JSON files with the existing stems,
+  keys, values and array dimensions. True uses compressed NPZ. Existing PAE/PDE
+  enable flags remain unchanged. Format switches remove old counterparts;
+  embeddings, processed inputs, affinity handoffs, CIF and summaries are unchanged.
+  Skip checks require the selected confidence format.
 - `--skip` checks required files for existence and nonzero size only. If affinity
   is requested, its final JSON is also required. A missing result reruns the whole
   seed, including structure samples and affinity; an old handoff NPZ does not count.
@@ -62,7 +73,7 @@ unrelated templates belong to different groups. Native `force`/`threshold` apply
 to the group. Do not mix legacy and grouped entries in a single templates list.
 
 When prepared JSON is requested, selected template chains are exported as
-`msas/<name>__<query-chain>_template_<i>.cif.zst`, with group identity and explicit
+`msas/<name>__<query-chain>_template_<i>.cif` (plus `.zst` when compression is enabled), with group identity and explicit
 residue pairs. Default pairs follow the native **actual feature consumer's offset**,
 not an assumed truncation at the local alignment end. Export/readback token
 coordinates and masks are checked; a persistence failure is reported, never used

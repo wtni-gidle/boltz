@@ -28,7 +28,7 @@ def test_affinity_seed_requires_nonempty_final_result(tmp_path, affinity_bytes):
         affinity.write_bytes(affinity_bytes)
     pending = main.filter_inputs_structure(
         Manifest([record]), tmp_path, skip=True, seed=4
-    )
+    , compress_full_confidence=True)
     assert bool(pending.records) == (not affinity_bytes)
 
 
@@ -40,7 +40,7 @@ def test_empty_structure_files_do_not_complete_seed(tmp_path):
     (tmp_path / "models" / "seed-4_sample-0_model.cif").write_bytes(b"")
     assert main.filter_inputs_structure(
         Manifest([record]), tmp_path, skip=True, seed=4
-    ).records
+    , compress_full_confidence=True).records
 
 
 @pytest.mark.parametrize("run_data", [True, False])
@@ -71,7 +71,7 @@ def test_cli_separates_write_flag_and_cleans_runtime(
 
     monkeypatch.setattr(main, "process_inputs", process)
     result = CliRunner().invoke(main.cli, [
-        "predict", str(source), "--out_dir", str(output),
+        "predict", "--compress_full_confidence", "true", str(source), "--out_dir", str(output),
         "--cache", str(tmp_path / "cache"), "--seeds", "4",
         "-D", str(run_data).lower(), "-P", "true",
         "--write_input_json", str(write_json).lower(),
@@ -102,7 +102,7 @@ def test_data_only_write_switch_controls_overwrite(tmp_path, monkeypatch, write_
         ccd_path=tmp_path / "ccd", mol_dir=tmp_path / "mols",
         boltz2=True, use_msa_server=False, msa_server_url="unused",
         msa_pairing_strategy="greedy", write_input_json=write_json,
-    )
+    compress_fold_input=True)
     saved = json.loads(destination.read_text())
     assert saved == (original if write_json else {"old": True})
 
@@ -166,7 +166,7 @@ def test_affinity_restarts_both_stages_as_one_seed(tmp_path, monkeypatch, missin
     monkeypatch.setattr(main, "Boltz2InferenceDataModule", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr(main.Boltz2, "load_from_checkpoint", lambda *a, **k: SimpleNamespace(eval=lambda: None))
     result = CliRunner().invoke(main.cli, [
-        "predict", str(source), "--out_dir", str(output), "--cache", str(tmp_path / "cache"),
+        "predict", "--compress_full_confidence", "true", str(source), "--out_dir", str(output), "--cache", str(tmp_path / "cache"),
         "-D", "false", "--write_input_json", "false", "--seeds", "4", "--diffusion_samples", "2", "--skip",
     ])
     assert result.exit_code == 0, f"{result.output}\n{result.exception}"
@@ -184,7 +184,7 @@ def test_external_multirank_launch_is_rejected_before_work(tmp_path, monkeypatch
     def forbid_download(*args, **kwargs):
         raise AssertionError("must not download in a rejected launch")
     monkeypatch.setattr(main, "download_boltz2", forbid_download)
-    result = CliRunner().invoke(main.cli, ["predict", str(source), "--out_dir", str(tmp_path / "out")])
+    result = CliRunner().invoke(main.cli, ["predict", "--compress_full_confidence", "true", str(source), "--out_dir", str(tmp_path / "out")])
     assert result.exit_code == 2
     assert "one entry process" in result.output
     assert not (tmp_path / "out").exists()
@@ -210,6 +210,6 @@ def test_failed_json_publication_restores_previous_resources(tmp_path, monkeypat
         return original_replace(source, destination)
     monkeypatch.setattr(main.os, "replace", fail_publish)
     with pytest.raises(OSError, match="fixture JSON"):
-        main.write_data_json(source, output, SimpleNamespace(record=SimpleNamespace(id="job")), {})
+        main.write_data_json(source, output, SimpleNamespace(record=SimpleNamespace(id="job")), {}, compress_fold_input=True)
     assert old_msa.read_bytes() == b"old MSA"
     assert old_json.read_bytes() == b"old JSON"

@@ -378,6 +378,7 @@ def filter_inputs_structure(  # noqa: C901
     seed: Optional[int] = None,
     diffusion_samples: int = 1,
     output_format: Literal["pdb", "mmcif"] = "mmcif",
+    compress_full_confidence: bool = False,
     write_full_pae: bool = False,
     write_full_pde: bool = False,
     write_embeddings: bool = False,
@@ -413,6 +414,7 @@ def filter_inputs_structure(  # noqa: C901
 
     """
     structure_suffix = "pdb" if output_format == "pdb" else "cif"
+    confidence_suffix = "npz" if compress_full_confidence else "json"
     if use_record_subdir is None:
         use_record_subdir = len(manifest.records) > 1
 
@@ -430,12 +432,12 @@ def filter_inputs_structure(  # noqa: C901
             required_paths = [
                 models_dir / f"{basename}_model.{structure_suffix}",
                 summary_dir / f"{basename}_summary_confidences.json",
-                full_data_dir / f"plddt_{basename}.npz",
+                full_data_dir / f"plddt_{basename}.{confidence_suffix}",
             ]
             if write_full_pae:
-                required_paths.append(full_data_dir / f"pae_{basename}.npz")
+                required_paths.append(full_data_dir / f"pae_{basename}.{confidence_suffix}")
             if write_full_pde:
-                required_paths.append(full_data_dir / f"pde_{basename}.npz")
+                required_paths.append(full_data_dir / f"pde_{basename}.{confidence_suffix}")
             if not all(_nonempty_file(path) for path in required_paths):
                 return False
 
@@ -644,6 +646,7 @@ def write_data_json(
     ccd: Optional[dict] = None,
     mol_dir: Optional[Path] = None,
     auto_msa_dir: Optional[Path] = None,
+    compress_fold_input: bool = False,
 ) -> Path:
     """Write the post-data-pipeline Boltz JSON used for later inference."""
     if source_path.suffix.lower() != ".json":
@@ -685,8 +688,8 @@ def write_data_json(
             from boltz.data.parse.prepared_templates import export_templates
             if ccd is None or mol_dir is None:
                 raise ValueError("Template export needs ccd and mol_dir for round-trip validation")
-            prepared_schema["templates"] = export_templates(target, stage, ccd, mol_dir)
-        persist_msa_resources(prepared_schema, stage, source_dir=out_dir)
+            prepared_schema["templates"] = export_templates(target, stage, ccd, mol_dir, compress_fold_input=compress_fold_input)
+        persist_msa_resources(prepared_schema, stage, source_dir=out_dir, compress_fold_input=compress_fold_input)
         (stage / data_path.name).write_text(json.dumps(prepared_schema, indent=2) + "\n", encoding="utf-8")
         publish_bundle(stage, out_dir, data_path.name)
     click.echo(f"Prepared Boltz input written to {data_path}")
@@ -716,9 +719,10 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
     records_dir: Path,
     prepared_output_root: Path,
     write_input_json: Optional[bool] = None,
+    compress_fold_input: bool = False,
 ) -> None:
     if write_input_json is None:
-        write_input_json = run_data_pipeline
+        write_input_json = True
     try:
         target = parse_input_target(
             path,
@@ -787,7 +791,15 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
             processed = processed_msa_dir / f"{target_id}_{msa_idx}.npz"
             msa_id_map[msa_id] = f"{target_id}_{msa_idx}"
             # Always rebuild from this invocation's input resources.
-            if msa_path.suffix.lower() in {".a3m", ".gz", ".xz", ".zst"}:
+            if msa_path.name.lower().endswith(".csv.zst"):
+                # Native CSV parsing relies on its suffix and key order. Decode
+                # only into this invocation\'s private workspace.
+                from boltz.data.parse.compression import open_maybe_compressed_text
+                private_csv = msa_dir / f"{target_id}_scalar_{msa_idx}.csv"
+                with open_maybe_compressed_text(msa_path) as handle:
+                    private_csv.write_text(handle.read(), encoding="utf-8")
+                msa = parse_csv(private_csv, max_seqs=max_msa_seqs)
+            elif msa_path.suffix.lower() in {".a3m", ".gz", ".xz", ".zst"}:
                 msa: MSA = parse_a3m(
                     msa_path, taxonomy=None, max_seqs=max_msa_seqs,
                 )
@@ -836,6 +848,7 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
                 source_path=path, out_dir=prepared_dir, target=target,
                 auto_msas=to_generate, ccd=ccd, mol_dir=mol_dir,
                 auto_msa_dir=prepared_msa_dir if run_data_pipeline else msa_dir,
+                compress_fold_input=compress_fold_input,
             )
 
     except Exception as e:  # noqa: BLE001
@@ -856,6 +869,7 @@ def process_inputs(
     max_msa_seqs: int = 8192,
     run_data_pipeline: bool = True,
     write_input_json: Optional[bool] = None,
+    compress_fold_input: bool = False,
     use_msa_server: bool = False,
     msa_server_username: Optional[str] = None,
     msa_server_password: Optional[str] = None,
@@ -962,6 +976,7 @@ def process_inputs(
         records_dir=records_dir,
         prepared_output_root=prepared_output_root,
         write_input_json=write_input_json,
+        compress_fold_input=compress_fold_input,
     )
 
     # Parse input data
@@ -999,6 +1014,7 @@ def prepare_msa_inputs(
     api_key_value: Optional[str] = None,
     prepared_output_root: Optional[Path] = None,
     write_input_json: bool = True,
+    compress_fold_input: bool = False,
 ) -> None:
     """Search MSAs and write executable per-target JSON inputs."""
     if prepared_output_root is None:
@@ -1056,6 +1072,7 @@ def prepare_msa_inputs(
                     auto_msas=to_generate,
                     ccd=ccd, mol_dir=mol_dir,
                     auto_msa_dir=msa_dir,
+                    compress_fold_input=compress_fold_input,
                 )
 
 
@@ -1311,15 +1328,20 @@ def cli() -> None:
     help=" to dump the s and z embeddings into a npz file. Default is False.",
 )
 @click.option(
-    "--write_input_json", type=bool, default=None,
-    help="Write/update processed input JSON. Defaults to --run_data_pipeline.",
+    "--write_input_json", type=bool, default=True,
+    help="Write/update processed input JSON (default: true).",
 )
+@click.option("--compress_fold_input", "--compress-fold-input", type=bool, default=False,
+              help="Write prepared MSA/template text as zstd (default: false).")
+@click.option("--compress_full_confidence", "--compress-full-confidence", type=bool, default=False,
+              help="Write detailed confidence as compressed NPZ (default: false).")
 def predict(  # noqa: C901, PLR0915, PLR0912
     data: str,
     out_dir: str,
     run_data_pipeline: bool = True,
     run_inference: bool = True,
     write_input_json: Optional[bool] = None,
+    compress_fold_input: bool = False,
     cache: str = "~/.boltz",
     checkpoint: Optional[str] = None,
     affinity_checkpoint: Optional[str] = None,
@@ -1332,6 +1354,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     diffusion_samples_affinity: int = 3,
     max_parallel_samples: Optional[int] = None,
     step_scale: Optional[float] = None,
+    compress_full_confidence: bool = False,
     write_full_pae: bool = False,
     write_full_pde: bool = False,
     output_format: Literal["pdb", "mmcif"] = "mmcif",
@@ -1368,7 +1391,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         msg = "At least one of --run_data_pipeline or --run_inference must be true."
         raise click.UsageError(msg)
     if write_input_json is None:
-        write_input_json = run_data_pipeline
+        write_input_json = True
 
     input_path = Path(data).expanduser()
     input_is_directory = input_path.is_dir()
@@ -1479,6 +1502,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             api_key_value=api_key_value,
             prepared_output_root=requested_output_root,
             write_input_json=write_input_json,
+            compress_fold_input=compress_fold_input,
         )
         return
 
@@ -1500,6 +1524,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         max_msa_seqs=max_msa_seqs,
         prepared_output_root=requested_output_root,
         write_input_json=write_input_json,
+        compress_fold_input=compress_fold_input,
     )
 
     # Load manifest
@@ -1535,6 +1560,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             diffusion_samples=diffusion_samples,
             output_format=output_format,
             write_full_pae=write_full_pae,
+            compress_full_confidence=compress_full_confidence,
             write_full_pde=write_full_pde,
             write_embeddings=write_embeddings,
             use_record_subdir=use_record_subdir,
@@ -1642,6 +1668,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
                 seed=current_seed,
                 use_record_subdir=use_record_subdir,
                 affinity_output_dir=affinity_work_dir,
+                compress_full_confidence=compress_full_confidence,
             )
             if trainer is None:
                 trainer = Trainer(

@@ -137,13 +137,14 @@ def _single_chain(structure, chain_name):
     return replace(structure, mask=mask).remove_invalid_chains()
 
 
-def export_templates(target: Target, out_dir: Path, ccd, mol_dir: Path) -> list[dict]:
+def export_templates(target: Target, out_dir: Path, ccd, mol_dir: Path, *, compress_fold_input: bool = False) -> list[dict]:
     """Write single-chain resources and record the native consumer's mapping.
 
     A persistence error fails explicitly: write=true must never silently remove
     a template that write=false would use.
     """
     groups, files, counts = {}, {}, {}
+    suffix = ".zst" if compress_fold_input else ""
     for info in target.record.templates or []:
         group = groups.setdefault(info.name, {"groupId": info.name, "chains": [], "force": info.force})
         if info.force:
@@ -157,9 +158,9 @@ def export_templates(target: Target, out_dir: Path, ccd, mol_dir: Path) -> list[
         if file_key not in files:
             index = counts.get(query, 0)
             counts[query] = index + 1
-            destination = out_dir / "msas" / f"{target.record.id}__{query}_template_{index}.cif.zst"
+            destination = out_dir / "msas" / f"{target.record.id}__{query}_template_{index}.cif{suffix}"
             single = _single_chain(structure, info.template_chain)
-            write_zstd_text(destination, to_mmcif(single, boltz2=True))
+            write_zstd_text(destination, to_mmcif(single, boltz2=True), compress=compress_fold_input)
             rebuilt = _read_cif(destination, ccd, mol_dir)
             # Compare actual token inputs after native parsing/tokenization,
             # including missing positions and coordinates in the original frame.
