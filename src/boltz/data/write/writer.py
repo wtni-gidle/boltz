@@ -5,6 +5,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Literal
 
+import click
 import numpy as np
 import torch
 from pytorch_lightning import LightningModule, Trainer
@@ -14,6 +15,24 @@ from torch import Tensor
 from boltz.data.types import Coords, Interface, Record, Structure, StructureV2
 from boltz.data.write.mmcif import to_mmcif
 from boltz.data.write.pdb import to_pdb
+
+
+def _check_prediction_failures(
+    failed: int, *, stage: str, seed: int, pl_module: LightningModule
+) -> None:
+    """Report failed predictions before distributed workers are torn down."""
+    if torch.distributed.is_initialized():
+        # Every rank participates, including ranks with no local failures.
+        # Checking only after Trainer.predict returns loses forked-worker state.
+        count = torch.tensor(failed, dtype=torch.int64, device=pl_module.device)
+        torch.distributed.all_reduce(count, op=torch.distributed.ReduceOp.SUM)
+        failed = int(count.item())
+    print(f"Number of failed examples: {failed}")  # noqa: T201
+    if failed:
+        raise click.ClickException(
+            f"{stage.capitalize()} prediction for seed {seed}: {failed} failed "
+            "example(s). Successful output files have been preserved."
+        )
 
 
 class BoltzWriter(BasePredictionWriter):
@@ -289,11 +308,12 @@ class BoltzWriter(BasePredictionWriter):
     def on_predict_epoch_end(
         self,
         trainer: Trainer,  # noqa: ARG002
-        pl_module: LightningModule,  # noqa: ARG002
+        pl_module: LightningModule,
     ) -> None:
-        """Print the number of failed examples."""
-        # Print number of failed examples
-        print(f"Number of failed examples: {self.failed}")  # noqa: T201
+        """Fail the invocation if any rank failed to predict an example."""
+        _check_prediction_failures(
+            self.failed, stage="structure", seed=self.seed, pl_module=pl_module
+        )
 
 
 class BoltzAffinityWriter(BasePredictionWriter):
@@ -376,8 +396,9 @@ class BoltzAffinityWriter(BasePredictionWriter):
     def on_predict_epoch_end(
         self,
         trainer: Trainer,  # noqa: ARG002
-        pl_module: LightningModule,  # noqa: ARG002
+        pl_module: LightningModule,
     ) -> None:
-        """Print the number of failed examples."""
-        # Print number of failed examples
-        print(f"Number of failed examples: {self.failed}")  # noqa: T201
+        """Fail the invocation if any rank failed to predict an example."""
+        _check_prediction_failures(
+            self.failed, stage="affinity", seed=self.seed, pl_module=pl_module
+        )

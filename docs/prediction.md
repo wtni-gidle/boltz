@@ -11,6 +11,7 @@ Once `boltz` is installed, you can run predictions with:
 * The optional top-level JSON `name` defines the target/record ID, generated `_data.json` filename, job directory, and MSA prefix. If omitted, the input filename stem is used (with `_data` removed for a prepared filename). A name must be a non-empty, single filename component. Prepared JSON always saves the resolved name, so renaming the file does not change the task identity. Duplicate task names in a batch are rejected before preparation.
 * `-D true -P false` runs only the MSA data pipeline and writes `<out_dir>/<name>/<name>_data.json` plus separate paired/unpaired A3M files. `-D false -P true` accepts that generated JSON directly, creates the native keyed CSV at runtime, and runs preprocessing and inference. Directory inputs also write one prepared bundle per task, without an extra input-directory-name layer. At least one stage must be enabled.
 * `--seeds 42` runs one seed, while `--seeds 40,41,42` runs several seeds sequentially in one process while sharing preprocessing and checkpoint loading. When omitted, one concrete seed is generated and printed.
+* If structure or affinity prediction reports any failed examples (including caught out-of-memory failures), the command exits nonzero after that stage's current seed finishes. The error identifies the stage, seed, and failure count; distributed workers combine their counts before reporting failure. Successfully written outputs remain available, and later seeds/stages are not started after the failure.
 
 
 ## Input format
