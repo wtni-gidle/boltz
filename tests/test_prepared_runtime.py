@@ -120,7 +120,8 @@ def test_affinity_restarts_both_stages_as_one_seed(tmp_path, monkeypatch, missin
     output = tmp_path / "out"
     job = output / "job"
     record = _record("job", affinity=True)
-    _touch_complete_structure_outputs(job, "job", seed=4, diffusion_samples=2, use_record_subdir=False)
+    _touch_complete_structure_outputs(job, "job", seed=4, diffusion_samples=2,
+                                      use_record_subdir=False, include_pae=True, include_pde=True)
     affinity_path = job / "affinity" / "seed-4_affinity.json"
     affinity_path.parent.mkdir()
     affinity_path.write_text("old affinity, not parsed by skip")

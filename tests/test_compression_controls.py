@@ -92,7 +92,8 @@ def test_inference_cli_skip_publishes_current_plain_input_without_search(tmp_pat
     source = tmp_path / "job.json"
     source.write_text(json.dumps({"name": "job", "sequences": [{"protein": {"id": "A", "sequence": "AAAA", "msa": str(msa)}}]}))
     output = tmp_path / "out"
-    for relative in ("models/seed-7_sample-0_model.cif", "summary_confidences/seed-7_sample-0_summary_confidences.json", "full_data/plddt_seed-7_sample-0.json"):
+    for relative in ("models/seed-7_sample-0_model.cif", "summary_confidences/seed-7_sample-0_summary_confidences.json", "full_data/plddt_seed-7_sample-0.json",
+                     "full_data/pae_seed-7_sample-0.json", "full_data/pde_seed-7_sample-0.json"):
         path = output / "job" / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("complete without parsing")

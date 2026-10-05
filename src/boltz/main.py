@@ -30,6 +30,7 @@ from boltz.data.msa.pipeline import (
     materialize_msa_csv,
     materialize_msa_csvs,
     search_msa_components,
+    validate_msa_components,
 )
 from boltz.data.parse.a3m import parse_a3m
 from boltz.data.parse.csv import parse_csv
@@ -490,7 +491,11 @@ def filter_inputs_affinity(
     seed: Optional[int] = None,
     use_record_subdir: Optional[bool] = None,
 ) -> Manifest:
-    """Check the input data and output directory for affinity.
+    """Compatibility helper for independently inspecting affinity outputs.
+
+    The prediction workflow uses structure_manifests for both stages, so a seed
+    with either stage incomplete is rerun as a unit. This helper is retained for
+    external callers; it does not control production affinity dispatch.
 
     Parameters
     ----------
@@ -552,7 +557,10 @@ def compute_msa(
     api_key_header: Optional[str] = None,
     api_key_value: Optional[str] = None,
 ) -> None:
-    """Compute the MSA for the input data.
+    """Compatibility composition of search_msa_components and materialize_msa_csvs.
+
+    Production preparation calls those shared operations separately. Keep this
+    entry point for callers that still need the combined search-and-CSV API.
 
     Parameters
     ----------
@@ -772,6 +780,10 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
                         unpaired_path=unpaired_path,
                         csv_path=msa_dir / f"{msa_id}.csv",
                         query_sequence=sequence,
+                        context=(
+                            f"target {target_id!r}, chain "
+                            f"{msa_id.removeprefix(target_id + '__')!r}"
+                        ),
                     )
             else:
                 click.echo(f"Materializing prepared MSA files for {path}.")
@@ -1063,6 +1075,19 @@ def prepare_msa_inputs(
                     api_key_header=api_key_header,
                     api_key_value=api_key_value,
                 )
+
+            # Publishing validates split resources before writing. Without
+            # publication, data-only must still reject malformed search results.
+            if not write_input_json:
+                for msa_id, sequence in to_generate.items():
+                    paired_path, unpaired_path = component_paths(msa_dir, msa_id)
+                    validate_msa_components(
+                        paired_path, unpaired_path, sequence,
+                        context=(
+                            f"target {target.record.id!r}, chain "
+                            f"{msa_id.removeprefix(target.record.id + '__')!r}"
+                        ),
+                    )
 
             if write_input_json:
                 write_data_json(
@@ -1550,6 +1575,20 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         ),
     )
 
+    # The standard Boltz-2 confidence checkpoint emits PAE/PDE regardless of
+    # full-output flags. Boltz-1 uses the flags. A custom Boltz-2 checkpoint may
+    # disable PAE, so inspect its saved capabilities only when skip needs them.
+    expect_pae = write_full_pae
+    expect_pde = write_full_pde
+    if model == "boltz2":
+        expect_pae = expect_pde = True
+        if skip and checkpoint is not None:
+            checkpoint_data = torch.load(checkpoint, map_location="cpu", weights_only=False)
+            parameters = checkpoint_data["hyper_parameters"]
+            expect_pde = parameters.get("confidence_prediction", True)
+            expect_pae = expect_pde and parameters.get("alpha_pae", 0.0) > 0
+            del checkpoint_data
+
     # Determine which structure predictions are still needed for every seed.
     structure_manifests = {
         current_seed: filter_inputs_structure(
@@ -1559,9 +1598,9 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             seed=current_seed,
             diffusion_samples=diffusion_samples,
             output_format=output_format,
-            write_full_pae=write_full_pae,
+            write_full_pae=expect_pae,
             compress_full_confidence=compress_full_confidence,
-            write_full_pde=write_full_pde,
+            write_full_pde=expect_pde,
             write_embeddings=write_embeddings,
             use_record_subdir=use_record_subdir,
         )

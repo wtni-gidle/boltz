@@ -610,7 +610,8 @@ def test_cli_reruns_all_samples_only_for_incomplete_seed(tmp_path, monkeypatch, 
     job = output_root / "target"
     for seed in (7, 9):
         _touch_complete_structure_outputs(job, "target", seed=seed,
-                                          diffusion_samples=2, use_record_subdir=False)
+                                          diffusion_samples=2, use_record_subdir=False,
+                                          include_pae=True, include_pde=True)
     preserved = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in job.rglob("*") if p.is_file()}
     calls = []
 
@@ -630,7 +631,8 @@ def test_cli_reruns_all_samples_only_for_incomplete_seed(tmp_path, monkeypatch, 
             seed = self.callbacks[0].seed
             calls.append((seed, model.samples, [r.id for r in datamodule.manifest.records]))
             _touch_complete_structure_outputs(job, "target", seed=seed,
-                                              diffusion_samples=model.samples, use_record_subdir=False)
+                                              diffusion_samples=model.samples, use_record_subdir=False,
+                                              include_pae=True, include_pde=True)
 
     monkeypatch.setattr(main, "download_boltz2", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "process_inputs", process_inputs)

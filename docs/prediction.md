@@ -1,3 +1,5 @@
+> EnsembleFold two-stage usage and output semantics are maintained in the [wrapper manual](../../docs/usage/boltz.md). For Boltz-2, PAE/PDE are written when returned by the confidence model; the `write_full_pae` / `write_full_pde` defaults below are not output-suppression guarantees. Boltz-1 checks those flags in its return path.
+
 # Prediction
 
 Once `boltz` is installed, you can run predictions with:

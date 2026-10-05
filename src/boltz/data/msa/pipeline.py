@@ -82,27 +82,99 @@ def search_msa_components(
 
 
 def read_a3m_sequences(path: Path) -> list[str]:
-    """Read sequences from an A3M file, accepting wrapped sequence lines."""
+    """Read FASTA records, accepting wrapped sequence lines and empty files."""
     sequences: list[str] = []
     current: list[str] = []
+    record = 0
     with open_maybe_compressed_text(path) as handle:
         for raw_line in handle:
             line = raw_line.strip()
             if not line:
                 continue
             if line.startswith(">"):
-                if current:
+                if record:
+                    if not current:
+                        raise ValueError(f"{path}, record {record}: header has no sequence")
                     sequences.append("".join(current))
                     current = []
+                record += 1
+                if not line[1:].strip():
+                    raise ValueError(f"{path}, record {record}: empty FASTA header")
             else:
+                if not record:
+                    raise ValueError(f"{path}, record 1: sequence has no FASTA header")
                 current.append(line)
-    if current:
+    if record:
+        if not current:
+            raise ValueError(f"{path}, record {record}: header has no sequence")
         sequences.append("".join(current))
     return sequences
 
 
-def _query_sequence(sequence: str) -> str:
-    return "".join(char for char in sequence if char != "-" and not char.islower())
+def validate_msa_components(
+    paired_path: Path,
+    unpaired_path: Path,
+    query_sequence: str,
+    *,
+    context: str = "split MSA",
+) -> tuple[list[str], list[str]]:
+    """Validate both complete A3Ms before truncating, converting or publishing.
+
+    Query records must be exact, uppercase and ungapped. Lowercase insertions
+    do not count toward hit alignment width; gap characters do. Record positions
+    are preserved so filtering paired gap rows cannot change pairing keys.
+    """
+    symbols = set(const.prot_letter_to_token)
+    symbols.update(char.lower() for char in const.prot_letter_to_token)
+    components: list[list[str]] = []
+    for channel, path in (("paired", paired_path), ("unpaired", unpaired_path)):
+        label = f"{context}, {channel} MSA {path}"
+        if not path.is_file():
+            raise FileNotFoundError(f"{label}: file not found")
+        try:
+            rows = read_a3m_sequences(path)
+        except ValueError as error:
+            raise ValueError(f"{context}, {channel} MSA: {error}") from error
+        if not rows:
+            if channel == "unpaired":
+                raise ValueError(f"{label}, record 1: missing required query sequence")
+            components.append(rows)
+            continue
+
+        query = rows[0]
+        if "-" in query or any(char.islower() for char in query):
+            raise ValueError(
+                f"{label}, record 1: query must be uppercase and ungapped, without insertions"
+            )
+        if query != query_sequence:
+            position = next(
+                (
+                    index
+                    for index, (actual, expected) in enumerate(zip(query, query_sequence), 1)
+                    if actual != expected
+                ),
+                min(len(query), len(query_sequence)) + 1,
+            )
+            raise ValueError(
+                f"{label}, record 1: first sequence does not match the query sequence; "
+                f"expected length {len(query_sequence)}, observed {len(query)}, "
+                f"first difference at position {position} (1-based)"
+            )
+        for record, sequence in enumerate(rows, 1):
+            for position, char in enumerate(sequence, 1):
+                if char not in symbols:
+                    raise ValueError(
+                        f"{label}, record {record}: unsupported symbol {char!r} "
+                        f"at position {position} (1-based)"
+                    )
+            width = sum(not char.islower() for char in sequence)
+            if width != len(query_sequence):
+                raise ValueError(
+                    f"{label}, record {record}: aligned width {width}, "
+                    f"expected {len(query_sequence)}"
+                )
+        components.append(rows)
+    return components[0], components[1]
 
 
 def materialize_msa_csv(
@@ -110,16 +182,15 @@ def materialize_msa_csv(
     unpaired_path: Path,
     csv_path: Path,
     query_sequence: str,
+    *,
+    context: Optional[str] = None,
 ) -> None:
     """Combine prepared paired/unpaired A3M files into a Boltz keyed CSV."""
-    if not paired_path.is_file():
-        msg = f"Prepared paired MSA not found: {paired_path}"
-        raise FileNotFoundError(msg)
-    if not unpaired_path.is_file():
-        msg = f"Prepared unpaired MSA not found: {unpaired_path}"
-        raise FileNotFoundError(msg)
-
-    paired_rows = read_a3m_sequences(paired_path)[: const.max_paired_seqs]
+    paired_rows, unpaired_rows = validate_msa_components(
+        paired_path, unpaired_path, query_sequence,
+        context=context if context is not None else csv_path.stem,
+    )
+    paired_rows = paired_rows[: const.max_paired_seqs]
     paired_keys = [
         row_index
         for row_index, sequence in enumerate(paired_rows)
@@ -128,16 +199,6 @@ def materialize_msa_csv(
     paired_rows = [
         sequence for sequence in paired_rows if sequence != "-" * len(sequence)
     ]
-
-    unpaired_rows = read_a3m_sequences(unpaired_path)
-    if not unpaired_rows:
-        msg = f"Prepared unpaired MSA is empty: {unpaired_path}"
-        raise ValueError(msg)
-    if _query_sequence(unpaired_rows[0]).upper() != query_sequence.upper():
-        msg = (
-            f"The first sequence in {unpaired_path} does not match the query sequence."
-        )
-        raise ValueError(msg)
 
     unpaired_rows = unpaired_rows[: (const.max_msa_seqs - len(paired_rows))]
     if paired_rows:

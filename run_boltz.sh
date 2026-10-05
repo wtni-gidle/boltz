@@ -41,6 +41,18 @@ usage() {
     exit 1
 }
 
+normalize_boolean() {
+    local value="$2"
+    # Match the Python CLI's case-insensitive, whitespace-trimmed spellings.
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    case "$value" in
+        [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]) printf 'true\n' ;;
+        [Ff][Aa][Ll][Ss][Ee]|0|[Nn][Oo]|[Oo][Ff][Ff]) printf 'false\n' ;;
+        *) echo "Error: $1 must be true or false (got '$2')." >&2; return 2 ;;
+    esac
+}
+
 # region: Parse command line arguments
 while getopts "i:o:d:D:P:J:z:f:r:n:c:p:m:M:S:h" opt; do
     case "${opt}" in
@@ -78,17 +90,25 @@ fi
 
 # region: Set default values
 if [[ "$gpu_device" == "" ]]; then gpu_device="0"; fi
-if [[ "$run_data_pipeline" == "" ]]; then run_data_pipeline="true"; fi
-if [[ "$run_inference" == "" ]]; then run_inference="true"; fi
-if [[ "$write_input_json" == "" ]]; then write_input_json="true"; fi
-if [[ "$compress_fold_input" == "" ]]; then compress_fold_input="false"; fi
-if [[ "$compress_full_confidence" == "" ]]; then compress_full_confidence="false"; fi
+if [[ "${run_data_pipeline+x}" != x ]]; then run_data_pipeline="true"; fi
+if [[ "${run_inference+x}" != x ]]; then run_inference="true"; fi
+if [[ "${write_input_json+x}" != x ]]; then write_input_json="true"; fi
+if [[ "${compress_fold_input+x}" != x ]]; then compress_fold_input="false"; fi
+if [[ "${compress_full_confidence+x}" != x ]]; then compress_full_confidence="false"; fi
 if [[ "$diffusion_samples" == "" ]]; then diffusion_samples="1"; fi
 if [[ "$recycling_steps" == "" ]]; then recycling_steps="3"; fi
 if [[ "$sampling_steps" == "" ]]; then sampling_steps="200"; fi
 if [[ "$max_parallel_samples" == "" ]]; then max_parallel_samples="5"; fi
-if [[ "$use_msa_server" == "" ]]; then use_msa_server="true"; fi
-if [[ "$skip" == "" ]]; then skip="false"; fi
+if [[ "${use_msa_server+x}" != x ]]; then use_msa_server="true"; fi
+if [[ "${skip+x}" != x ]]; then skip="false"; fi
+
+run_data_pipeline=$(normalize_boolean -D "$run_data_pipeline")
+run_inference=$(normalize_boolean -P "$run_inference")
+write_input_json=$(normalize_boolean -J "$write_input_json")
+compress_fold_input=$(normalize_boolean -z "$compress_fold_input")
+compress_full_confidence=$(normalize_boolean -f "$compress_full_confidence")
+use_msa_server=$(normalize_boolean -M "$use_msa_server")
+skip=$(normalize_boolean -S "$skip")
 
 if [[ "$run_data_pipeline" == "false" && "$run_inference" == "false" ]]; then
     echo "Error: run_data_pipeline and run_inference cannot both be false."

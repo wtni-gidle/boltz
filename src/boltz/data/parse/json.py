@@ -5,7 +5,7 @@ from typing import Mapping, Optional
 
 from rdkit.Chem.rdchem import Mol
 
-from boltz.data.msa.pipeline import component_paths, materialize_msa_csv
+from boltz.data.msa.pipeline import materialize_msa_csv, validate_msa_components
 from boltz.data.parse.compression import open_maybe_compressed_text, write_zstd_text
 from boltz.data.parse.schema import parse_boltz_schema
 from boltz.data.types import Target
@@ -199,6 +199,7 @@ def materialize_prepared_msas(
                 unpaired_path=unpaired_path,
                 csv_path=csv_path,
                 query_sequence=sequence,
+                context=f"target {target_name!r}, chain {protein['id']!r}",
             )
             csv_by_sequence[sequence] = csv_path
             spec_by_sequence[sequence] = spec
@@ -236,6 +237,10 @@ def persist_msa_resources(schema: dict, output_dir: Path, source_dir: Optional[P
         if isinstance(msa, dict):
             paths = tuple(output_dir / "msas" / f"{identifier}_{kind}msa.a3m{suffix}" for kind in ("paired", "unpaired"))
             sources = [_resolve_path(msa[key], source_dir) for key in ("paired", "unpaired")]
+            validate_msa_components(
+                sources[0], sources[1], sequence,
+                context=f"target {schema['name']!r}, chain {protein['id']!r}",
+            )
             # Read both first, so updating the same bundle cannot clobber a
             # resource before another component has read it.
             contents = []

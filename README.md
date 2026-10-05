@@ -1,3 +1,5 @@
+> EnsembleFold wrapper 的当前用法、输入输出及验证记录统一维护在[方法手册](../docs/usage/boltz.md)和[共同说明](../docs/usage/README.md)。旧 wrapper 专页已合并归档；下文原生项目说明保留其自身适用范围。
+
 <div align="center">
   <div>&nbsp;</div>
   <img src="docs/boltz2_title.png" width="300"/>
