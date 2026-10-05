@@ -233,6 +233,6 @@ def test_inference_only_missing_msa_fails_without_search_or_publication(tmp_path
     }}]}))
     monkeypatch.setattr(pipeline, "run_mmseqs2", lambda *a, **k: pytest.fail("D=false searched"))
     public = tmp_path / "public"
-    with pytest.raises(RuntimeError, match="Prepared paired MSA not found"):
+    with pytest.raises(RuntimeError, match=r"paired MSA .*: file not found"):
         _process(source, alanine_ccd, tmp_path / "runtime", public, run_data=False)
     assert not public.exists()
