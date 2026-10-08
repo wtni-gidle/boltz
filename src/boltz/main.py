@@ -3,6 +3,7 @@ import multiprocessing
 import os
 import pickle
 import platform
+import re
 import secrets
 import tarfile
 import urllib.request
@@ -698,7 +699,14 @@ def write_data_json(
                 raise ValueError("Template export needs ccd and mol_dir for round-trip validation")
             prepared_schema["templates"] = export_templates(target, stage, ccd, mol_dir, compress_fold_input=compress_fold_input)
         persist_msa_resources(prepared_schema, stage, source_dir=out_dir, compress_fold_input=compress_fold_input)
-        (stage / data_path.name).write_text(json.dumps(prepared_schema, indent=2) + "\n", encoding="utf-8")
+        json_text = json.dumps(prepared_schema, indent=2)
+        # Match AF3: keep template indices and model seeds on single lines.
+        json_text = re.sub(
+            r'("(?:queryIndices|templateIndices|modelSeeds)": \[)([\s\n\d,]+)(\],?)',
+            lambda match: match[1] + re.sub(r'\n\s+', ' ', match[2].strip()) + match[3],
+            json_text,
+        )
+        (stage / data_path.name).write_text(json_text + "\n", encoding="utf-8")
         publish_bundle(stage, out_dir, data_path.name)
     click.echo(f"Prepared Boltz input written to {data_path}")
     return data_path
